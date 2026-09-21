@@ -21,22 +21,25 @@
 | 0B-2 | 项目目录结构设计 | ✅ 已完成 |
 | 0B-3 | 配置管理 | ✅ 已完成 |
 | 0B-4 | 日志 | ✅ 已完成 |
-| 0B-5 | git 与 `.gitignore` | ⬜ 进行中 |
+| 0B-5 | git 与 `.gitignore` | ✅ 已完成 |
+| 1 | Stage 1 · 文档接入 | ⬜ 下一步 |
 
 ---
 
 ## ⚡ 下次从这里继续
 
-**Day 2 · 0B 进行中 —— 下次从这里继续：0B-5 git 与 `.gitignore`**
+**Day 2 ✅ · 0B 全部完成 —— 下次从这里继续：Day 3 · Stage 1 文档接入**
 
-- **0B 进度**：
-  1. ~~启动 Ollama、命令行跑通对话/embedding~~ ✅ Day 0（`check_env.py`）
-  2. ~~项目目录结构设计~~ ✅（三条判据 → `paper_rag/` 骨架）
-  3. ~~配置管理~~ ✅（`paper_rag/config.py`，路径靠 `__file__` 定位）
-  4. ~~日志~~ ✅（`paper_rag/logger.py`，由入口脚本调 `setup()`）
-  5. **git 与 `.gitignore`** ← **下一步**
-- **0B 验收**：`git clone` 到另一台机器，改一个配置文件就能跑
-- **七天冲刺进度**：Day 1 ✅ → Day 2（0A-7 ✅、0B-2/3/4 ✅ → **0B-5**）
+- **0B 五项全过**：Ollama 跑通 ✅ / 目录结构 ✅ / 配置管理 ✅ / 日志 ✅ / git 与 `.gitignore` ✅
+- **0B 验收已通过**：克隆到全新目录 `C:\MyTemp\pyra_clone` → 建 venv → 装依赖 → `check_env.py` **四项全过**，全程没改任何代码
+- **远程仓库**：`https://github.com/ParkChoa6/Paper_RAG_Agent`（Private）
+- **下一步：Stage 1 文档接入**（PDF → chunks）
+  1. 用 PyMuPDF 把一页 PDF 读成文字（先跑通单栏；**双栏/公式只记录问题，不解决**）
+  2. 切分成 chunks（复用 `lessons/chunk.py` 里 `Chunk` 的字段设计）
+  3. **元数据设计**（不许砍 —— 三大支柱之一）paper_id / page_start / page_end / section
+  4. 写进 `paper_rag/ingest.py`，入口放 `scripts/build_index.py`
+- **已知待办**：`data/processed/` 没有进仓库（空目录 git 不跟踪）—— 由**程序自己 mkdir**，不加 `.gitkeep`（理由见 0B-5 记录）
+- **七天冲刺进度**：Day 1 ✅ → Day 2 ✅（0A-7 + 0B 全部）→ **Day 3：Stage 1**
 
 ---
 
@@ -707,5 +710,111 @@ FileNotFoundError: No such file or directory: '...data\logs\paper_rag.log'
 ### 验收
 
 - [x] 通过
+
+---
+
+## 课程 0B-5 · git 与 `.gitignore`
+
+**日期**：2026-09-21
+**产出**：`.gitignore`、`README.md`、`data/raw/.gitkeep`；仓库推到 GitHub（Private，19 个文件）
+
+### 学到什么
+
+**git 存的不是「文件」，是「快照」**：每次 commit = 给整个项目拍一张照片。所以能回到任何一张照片，也所以你敢随便改。
+
+**四个地方**：工作区 →（`git add`）暂存区 →（`git commit`）本地仓库 →（`git push`）远程仓库。
+暂存区存在的意义：**一次提交 = 一件事**（你调切分逻辑时顺手改的错别字，不该混进这次提交）。
+
+**核心判据（本课主轴）**：
+
+> **别人 clone 下来，能不能自己弄出这个文件？**
+> 能 → 不进（写进 `.gitignore`），把"怎么弄出来"写进 README；不能 → 进
+
+**用户自己列的清单里，错的三处**：
+
+| 判断 | 错在哪 |
+|---|---|
+| `.venv/` 全进 ❌ | **最严重**。「环境要能搭起来」≠「把搭好的环境装进仓库」。`pyvenv.cfg` 写死了本机绝对路径，63.6 MB / 1008 个文件、含平台专属 `.pyd/.dll`。**`requirements.txt` 存在的意义就是它不能被复制** |
+| `scripts/` 不进 ❌ | **把 `scripts/` 和 `tests/` 看成同一个东西**。`tests/` = 验证代码对不对（给开发者）；`scripts/` = **使用**代码（给用户）。判据一：前者随"行为变了"改，后者随"你想换用法"改 —— **两张清单** |
+| `lessons/` `docs/` 不进 ⚠️ | **判据用错了轴**。「个人学习记录」=「不想给别人看」→ 那用**私有仓库**解决，不是 `.gitignore` |
+
+**⚠️ 救命的一条**：
+
+> **`.gitignore` 不是删除，也不是加密。** 文件还在磁盘上。
+> 而且**它只对「还没被跟踪的文件」生效** —— 一个文件**一旦被 `git add` 过**，之后再加进 `.gitignore` 照样被继续跟踪。
+>
+> **推论（以后处理 API key 会用到）**：key **一旦提交过一次**，往 `.gitignore` 里加是**没用的** —— 历史里永远有。唯一正确的做法是**去把那个 key 作废，重发一个**。
+
+**git 不跟踪目录，只跟踪文件** → 空目录进不了仓库 → 用 `.gitkeep`（空文件，社区惯例）占位。
+
+**「输入目录」vs「产物目录」（由 `data/raw/` 和 `data/processed/` 的差异引出）**：
+
+| | 里面放什么由谁决定 | 怎么保证目录存在 |
+|---|---|---|
+| `data/raw/`（**输入**） | **人**（你自己放论文） | `.gitkeep` —— 程序不会创建它 |
+| `data/processed/`（**产物**） | **程序** | **程序自己 `mkdir(parents=True, exist_ok=True)`** |
+
+> **输入靠人准备，产物靠程序保证。** 不能靠 `.gitkeep` —— 它只解决"git 跟踪空目录"，解决不了"目录被删了 / 用 zip 下载 / 部署到容器里"。
+
+**`.gitignore` 的语法要点**：
+
+- `__pycache__/` —— 尾斜杠 = **只匹配目录**
+- `*.py[cod]` —— 字符集 = `*.pyc` / `*.pyo` / `*.pyd` 三个一起
+- `!data/raw/sample-*.pdf` —— 感叹号 = **取消**上面的忽略，**必须写在忽略规则之后**（git 从上往下读，后面的覆盖前面的）
+- 我用 `sample-` 命名约定：**凡是能靠规则挡住的，就别靠自觉**
+
+### 推送前体检（这一步不能省）
+
+```powershell
+git ls-files                    # 到底会推上去哪些
+git grep -niE "(api[_-]?key|secret|password|token|sk-[a-zA-Z0-9]{10,})"
+git grep -n "C:\\\\"            # 本机绝对路径
+```
+
+本次结果：**密钥零命中** ✅；`docs/LEARNING_LOG.md` 里有 4 处 `C:\Users\蒋进平\...`（本机用户名）；commit 里带 QQ 邮箱。
+
+**远程地址踩的坑**：原来的 remote 指向 `github.com/ParkChoa6/ParkChoa6.git` —— **仓库名和用户名一样，那是 GitHub 的「profile 仓库」**，它的 `README.md` 会显示在个人主页上。推上去会把整个项目和 README 变成"个人主页自我介绍"。已改成 `ParkChoa6/Paper_RAG_Agent`，remote 名也从 `Paper_RAG_Agent` 改成惯例的 **`origin`**。
+
+### 踩过的坑
+
+**认证失败 —— 报错信息 ≠ 根因（第三次）**：
+
+```
+remote: Invalid username or token. Password authentication is not supported for Git operations.
+```
+
+- **注意 `remote:` 开头** —— 这句话是 **GitHub 服务器**说的，不是 git 客户端。所以网络通、地址对、请求发出去了，**是身份被拒**
+- **表象**：看起来在说「GitHub 不让用密码了，你得换 token」
+- **根因**：**登录助手根本没被启动** ——
+
+  ```
+  PATH 里含 Git 的条目只有： C:\WorkAndStudy\Git\cmd        ← 只有这个
+  GCM 实际住在：            C:\WorkAndStudy\Git\mingw64\bin\git-credential-manager.exe
+  system 配置：             credential.helper = manager
+  ```
+
+  git 看到 `manager` → 去 **PATH** 里找 `git-credential-manager` → `mingw64\bin` 不在 PATH → **没找到** → 退化成**在终端问你用户名密码** → 你输了密码 → GitHub 拒绝。
+- **如果 GCM 正常启动，根本不会被问密码** —— 它会弹浏览器让你点授权
+- **修法**：`git config --global credential.helper "C:/WorkAndStudy/Git/mingw64/bin/git-credential-manager.exe"`
+
+**`credential.helper` 的两种值**：
+
+| 值 | git 怎么理解 |
+|---|---|
+| `manager` | 去 **PATH** 里找叫这个名字的程序 |
+| `C:/.../git-credential-manager.exe` | **直接跑这个文件** |
+
+短名字能用的前提是「它在 PATH 上」。这台机器的 Git 装在非默认位置（`C:\WorkAndStudy\Git`），装的时候只把 `cmd\` 加进了 PATH。
+
+### 待复习
+
+- **永远不要在终端里给 GitHub 输密码** —— **它问你要密码，就说明工具链坏了**
+- **`.gitignore` 只对未跟踪文件生效**；泄露过的密钥只能作废重发
+- **输入目录 / 产物目录** 的区别
+- 推送前体检：`git ls-files` + `git grep` 扫密钥
+
+### 验收
+
+- [x] 通过 —— 克隆到 `C:\MyTemp\pyra_clone`，建 venv、装依赖、`check_env.py` 四项全过，**全程没改任何代码**
 
 ---
