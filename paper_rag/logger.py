@@ -5,10 +5,9 @@
 """
 
 import logging
-from pathlib import Path
 import sys
 
-from paper_rag.config import DATA_DIR, LOG_LEVEL, LOG_FILE
+from paper_rag.config import DATA_DIR, LOG_FILE, LOG_LEVEL
 
 
 def setup(level=None):
@@ -21,8 +20,7 @@ def setup(level=None):
         None
     """
     level = level or LOG_LEVEL
-    LOG_FILE: Path = DATA_DIR / "logs" / "paper_rag.log"
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)  # ← 模块层直接执行
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)  # 建目录，调用时才执行
 
     logging.basicConfig(
         level=getattr(logging, level),

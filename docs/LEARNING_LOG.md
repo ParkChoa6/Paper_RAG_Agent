@@ -22,24 +22,50 @@
 | 0B-3 | 配置管理 | ✅ 已完成 |
 | 0B-4 | 日志 | ✅ 已完成 |
 | 0B-5 | git 与 `.gitignore` | ✅ 已完成 |
-| 1 | Stage 1 · 文档接入 | ⬜ 下一步 |
+| 1 | Stage 1 · 文档接入 | ✅ 已完成 |
+| 2 | Stage 2 · 向量化与检索 | ⬜ 下一步 |
 
 ---
 
 ## ⚡ 下次从这里继续
 
-**Day 2 ✅ · 0B 全部完成 —— 下次从这里继续：Day 3 · Stage 1 文档接入**
+**Day 3 ✅ · Stage 1 全部完成 —— 下次从这里继续：Day 4 · Stage 2 向量化与检索**
 
-- **0B 五项全过**：Ollama 跑通 ✅ / 目录结构 ✅ / 配置管理 ✅ / 日志 ✅ / git 与 `.gitignore` ✅
-- **0B 验收已通过**：克隆到全新目录 `C:\MyTemp\pyra_clone` → 建 venv → 装依赖 → `check_env.py` **四项全过**，全程没改任何代码
-- **远程仓库**：`https://github.com/ParkChoa6/Paper_RAG_Agent`（Private）
-- **下一步：Stage 1 文档接入**（PDF → chunks）
-  1. 用 PyMuPDF 把一页 PDF 读成文字（先跑通单栏；**双栏/公式只记录问题，不解决**）
-  2. 切分成 chunks（复用 `lessons/chunk.py` 里 `Chunk` 的字段设计）
-  3. **元数据设计**（不许砍 —— 三大支柱之一）paper_id / page_start / page_end / section
-  4. 写进 `paper_rag/ingest.py`，入口放 `scripts/build_index.py`
-- **已知待办**：`data/processed/` 没有进仓库（空目录 git 不跟踪）—— 由**程序自己 mkdir**，不加 `.gitkeep`（理由见 0B-5 记录）
-- **七天冲刺进度**：Day 1 ✅ → Day 2 ✅（0A-7 + 0B 全部）→ **Day 3：Stage 1**
+### ⚠️ 开工前先做这一件事
+
+**启动 Ollama 服务**（上次检查时是停的，连接被拒 `WinError 10061`）：
+
+```bash
+ollama serve          # 或直接开 Ollama 桌面应用
+ollama list           # 确认 qwen2:7b 和 bge-large-zh-v1.5 都在
+```
+
+Stage 2 要调 `bge-large-zh-v1.5` 做 embedding，服务不启动第一步就卡死。
+
+### Stage 1 的产物
+
+| 文件 | 作用 |
+|---|---|
+| `paper_rag/config.py` | 全部阈值（版面 / 标题 / 切分） |
+| `paper_rag/models.py` | `Chunk` 八字段数据模型 |
+| `paper_rag/logger.py` | `setup()`，入口脚本第一行调用；日志落 `data/logs/paper_rag.log` |
+| `paper_rag/ingest.py` | `clean_text` / `block_text` / `is_body_block` / `find_body_size` / `is_heading_block` / `paragraphs_to_chunks` |
+| `scripts/build_index.py` | **Stage 1 入口**，产出 `data/processed/chunks.json`；全程走 logger 不用 print |
+| `scripts/probe_*.py` | 五支探针（pdf / blocks / font / ingest / chunks） |
+
+**跑一次全流程**：`python scripts/build_index.py` → `237 chunks, 33 sections`
+
+### Stage 2 内容（ROADMAP）
+
+1. Embedding 是什么、为什么需要它
+2. **余弦相似度**（手写）
+3. **先用 numpy 手写一遍暴力检索**
+4. 再换成向量库（FAISS）
+5. 验收：手写检索的结果与向量库一致，并能解释"为什么索引能加速"
+
+### 七天冲刺进度
+
+Day 1 ✅ → Day 2 ✅（0A-7 + 0B）→ Day 3 ✅（**Stage 1 全部**）→ **Day 4：Stage 2**
 
 ---
 
@@ -818,3 +844,342 @@ remote: Invalid username or token. Password authentication is not supported for 
 - [x] 通过 —— 克隆到 `C:\MyTemp\pyra_clone`，建 venv、装依赖、`check_env.py` 四项全过，**全程没改任何代码**
 
 ---
+
+---
+
+## Day 3 · Stage 1 文档接入（2026-09-23）
+
+**目标**：PDF → `list[Chunk]` → `data/processed/chunks.json`
+
+**语料**：RAG 原论文 `arXiv:2005.11401v4`，19 页，单栏（选它就是因为单栏 —— 双栏只记录问题，不解决）
+
+---
+
+### 学到什么
+
+#### 1. PDF 是页面描述语言，不是文本
+
+读 txt 是**解码**（字节 → 字符，一一对应）；读 PDF 是**重建**（把一堆绘图指令反推成"人类会怎么读"）。
+
+所以 `get_text()` 的每一个结果都是**它的猜测**，不是事实。这就是为什么后面所有判断都得拿真数据验证。
+
+#### 2. `get_text("dict")` 的三层结构
+
+```
+page
+ └─ blocks[]        块 —— 视觉独立的一块：一个段落 / 一个标题 / 一张图
+     └─ lines[]     行 —— 块内的每一行
+         └─ spans[] 段 —— 行内「样式完全相同」的一段连续文字
+```
+
+**样式（size / font / flags）挂在 span 上，不在 block 上。**
+
+原因：PDF 里样式是"画每个字时"的属性，不是"这块属于什么"的属性。一个块里完全可以混排（比如正文句尾挂一个 7pt 的脚注上标）。**要拿样式，必须下到第三层。**
+
+#### 3. `span["text"]` 里没有换行符
+
+**换行是结构信息（`lines` 是个列表），不是字符。**
+
+这一条直接导致了 `clean_text` 的两条规则**静默失效**（见"踩过的坑 · 4"）。
+
+修复：`block_text()` 里外层必须 `"
+".join`。
+
+#### 4. 阈值必须从**全量数据**算，不能看一页拍脑袋
+
+| 阈值 | 错的值 | 怎么来的 | 对的値 | 怎么定的 |
+|---|---|---|---|---|
+| `PAGE_MARGIN_X` | ~~108~~ | 看第 1 页正文 x0=108.0 | **60** | 全文正文 x0 ∈ [106.7, 108.0]，水印 x0=10.9 |
+| `HEADING_SIZE_GAP` | — | — | **1.0** | 正文 10.1 ↔ 标题 12.0，中间是空的 |
+| `MIN_CHUNK_CHARS` | — | — | **40** | **没有缝**，见下 |
+
+**`PAGE_MARGIN_X = 108` 的代价**：误杀 **88 个正文块**（本该只丢 19 个）。修好后是 保留 387 / 丢弃 19 —— 丢弃清单精确等于 1 个水印 + 18 个页码。
+
+#### 5. 阈值要取两类数据的**缝的中点**
+
+```
+水印 x0 = 10.9  ←──── 96 点的空档 ────→  正文 x0 ≥ 106.7     取 60
+正文 10.1pt     ←──── 1.9pt 的空档 ───→  标题 12.0pt          取 11.0（→ GAP=1.0）
+```
+
+贴边取（比如 105 或 10.5）也能跑，但**没有余量**。取中点，两边各留一半。
+
+#### 6. **但有些阈值根本没有缝 —— 这时改用「代价权衡」**
+
+`chunk` 长度分布是 **0 → 1606 连续平滑**，找不到任何断点：
+
+```
+   0-2    31
+   3-5    16
+  6-10     9
+ 11-20    29
+ 21-40    25
+ 41-80    18
+81-200   123
+  201+    96
+```
+
+没有缝的时候别再盯着数据找。**改问「错了会怎样」**：
+
+- 丢掉一个真段落 → 少一条知识，**不可恢复**
+- 留下一个垃圾 chunk → 检索多一条噪音，**有 ranking 兜底**
+
+`MIN_CHUNK_CHARS = 40` 是**权衡的产物，不是数据的产物**，所以写进 config 方便以后调。
+
+#### 7. 一级标题看字号，二级标题得看**字重**
+
+排版区分层级用**两个维度**：字号 × 字重。
+
+```
+4 Results                        12.0pt + 粗体   ← 字号信号抓得到
+3.3 Jeopardy Question Generation 10.0pt + 粗体   ← 字号跟正文一样！只能靠粗体
+```
+
+**只看字号，二级标题全漏。**
+
+`flags` 是个**位域**：
+
+```
+flags = 20 = 0b10100
+                └ bit4 (16) = 粗体
+```
+
+判据 = 两个信号 **OR**：`size >= body + GAP` 或 `|size - body| <= JITTER 且 flags & 16`。
+
+结果：40 个标题 / 347 个正文，假阳性 3 个（首页作者名，也是粗体 —— 无害，紧接着被 `Abstract` 覆盖），**零正文误判**。
+
+#### 8. 累加器：`current_section` 定义在哪一层
+
+**变量的作用域 = 它必须活多久。**
+
+```
+p 1(1-based)  2 Methods         ← 标题
+p 2(1-based)  2.1 Models        ← 二级标题，中间隔了一次页循环
+```
+
+`current_section` 要跨页，所以必须在**页循环之外**。放进页循环 → 每页清零 → 第 2 页的正文全挂错 section。
+
+**验证方法**：找一个 section 跨页的 chunk，看它的标签对不对。
+
+#### 9. 过滤器的**顺序**和**作用域**
+
+长度过滤（`< 40 丢弃`）是**针对正文块**的规则。标题天然很短（`Abstract` 8 字、`4 Results` 9 字），**不属于这条规则的管辖范围**。
+
+所以顺序必须是：**先判标题 → 再过滤长度**。
+
+放反了会怎样？代码不报错，输出"看起来也对"（237 个 chunk、页码连续），**只有 `section` 种类数从 33 掉到 2 露了马脚**。
+
+**教训：改完过滤逻辑，要看统计，不能只看前几行输出。**
+
+---
+
+### 踩过的坑
+
+#### 1. 🔴 `PAGE_MARGIN_X = 108` —— 灾难性误删
+
+见上面"学到什么 · 4"。**88 个正文块被误杀**。
+
+根因：拿**第 1 页**的正文 x0（108.0）当阈值，但全量正文 x0 最小值是 **106.7** —— 有 1.3 点的块落在阈值左边。
+
+#### 2. `models.py` 里用类变量自增 `chunk_id`
+
+```python
+class Chunk:
+    _chunk_id = 0            # 类变量
+    def __init__(self, ...):
+        Chunk._chunk_id += 1 # ← 灾难
+        self.paper_id = Chunk._chunk_id
+```
+
+**后果**：一篇论文变成一百篇（每个 chunk 拿到不同的 `paper_id`）。而且传进来的 `chunk_id` / `paper_id` 参数被**静默丢弃**。
+
+修：删掉类变量，`chunk_id` 由**调用方**传入（谁有上下文，谁负责生成）。
+
+#### 3. `Path = Path(__file__).resolve().parent.parent` —— 名字覆盖
+
+`Path` 从 `pathlib.Path` **类**变成一个项目根**实例**。之后 `Path / "x"` 恰好还能工作，**所以不报错**。
+
+修：删掉这行，相对路径就写相对路径。
+
+#### 4. 🔴 `get_text("dict")` 的 span 不带换行 → `clean_text` 两条规则变死代码
+
+`clean_text` 的契约是「传入末尾带 `
+` 的原始文本」，但调用方 `"".join(...)` 拼出来的字符串**一个 `
+` 都没有**。
+
+**两边都不报错，静默失效。** 症状：
+
+| 现象 | 根因 |
+|---|---|
+| `factual knowledgein their` | 行之间没补换行 |
+| `down-stream`（断词没接上） | 规则 2 在等一个不存在的 `
+` |
+| `The DivineComedy` | 同上 |
+| `section = "1Introduction"` | 同上 |
+
+修：`block_text()` 外层 `"
+".join`。**一行修了四个症状。**
+
+**为什么之前没发现**：`probe_ingest.py` 用手写字符串测 `clean_text` ——
+
+```python
+print(clean_text("down-
+stream
+"))   # ✅ 通过
+```
+
+**手写样本里有 `
+`，真实数据里没有。又是"探针要喂真数据"。**
+
+#### 5. `-
+` 分不清「断词」和「真连字符」
+
+```
+down-
+stream          → downstream         （断词，该接上）
+knowledge-
+intensive  → knowledgeintensive （真连字符，该保留）
+```
+
+**两者在纯文本里长得一模一样**，都是 `字母 + - + 换行 + 字母`。区分它们需要的信息**不在文本里**。
+
+统计：全文 40 处行尾连字符，**约 30 处是断词（75%）**。
+
+**决定：不改，记录。** 现在的规则是对的多数派；换成"保留连字符"会把 30 处搞错。真修要上词典（接上后查是不是真词）。
+
+#### 6. `list[Chunk]` 注解缺 import → `NameError`
+
+```python
+def paragraphs_to_chunks(...) -> list[Chunk]:   # 没 import Chunk
+```
+
+**Python 3.13 里函数注解在 `def` 执行的那一刻就被求值** —— 所以只要有人 `import paper_rag.ingest`，立刻报错，函数体一个字都没跑。
+
+---
+
+### 已知问题（记着，先不修）
+
+| # | 问题 | 规模 | 为什么不修 |
+|---|---|---|---|
+| 1 | 真连字符被接上（`knowledge-intensive` → `knowledgeintensive`） | 40 处里约 10 处 | 要词典；且断词占 75%，现在是多数派 |
+| 2 | 首页题头区产生垃圾 chunk（机构地址、邮箱） | 237 里约 2 个 | 影响极小 |
+| 3 | **表格数据当正文**（`RAG-Token 43.5 54.8 46.5 51.9...`） | 未统计 | 长度信号干不掉（长度跟真正文一样）；要靠"数字密度"这个新信号 |
+| 4 | 图注 / 表注（`Figure 1:` `Table 1:`） | 未统计 | 它们确实是正文，只是检索时权重该低一些 |
+| 5 | `References` 占 136/237 = **57%** 的 chunk | 大 | `section == "References"` 已经标出来了，Stage 2/3 可以按需过滤 |
+
+---
+
+### 待复习
+
+- **阈值三态**：有缝 → 取中点；无缝 → 权衡代价；**永远从全量数据算，不看单页**
+- **`get_text("dict")`**：样式在 **span** 上；`span["text"]` **不含换行**
+- **探针要喂真数据** —— 手写样本会让你以为规则生效了
+- **过滤器的作用域**：一条规则管哪些块？顺序错了不报错，只让统计变形
+- **作用域 = 要活多久**：跨页状态放在页循环之外
+- **位域**：`flags & (1 << 4)` 判粗体
+- **`max(dict, key=dict.get)`** 返回的是**键**，不是值
+
+---
+
+### 验收
+
+- [x] 通过 —— `python scripts/build_index.py` 产出 `data/processed/chunks.json`
+
+| 检查项 | 结果 |
+|---|---|
+| chunk 数 | **237** |
+| 八字段齐全 | 237/237 ✅ |
+| `chunk_id` 唯一 | 237/237 ✅ |
+| 页码范围 | 1~19，覆盖全部 19 页 ✅ |
+| `page_start > page_end` 越界 | 0 ✅ |
+| 空文本 | 0 ✅ |
+| 文本长度 | 最短 45 / 中位 168 / 最长 1606 |
+| `section` 种类 | 33 |
+| **跨页 section** | `2.1 Models` 的 chunk 在第 3 页，标签是 `2.1 Models`（不是初值）✅ |
+
+---
+
+## Day 3 · 补记 · 日志接入（同日晚）
+
+0B-4 学的日志模块，今天才第一次真的被用上 —— 在这之前 `build_index.py` 全程 `print`，
+`data/logs/paper_rag.log` 里只有 0B-4 手敲的那几条测试。
+
+### 学到什么
+
+**1. `setup()` 必须死在最前面 —— `basicConfig` 只生效一次**
+
+`logging.basicConfig()` 的内部逻辑是：**根 logger 已经有 handler 了，就什么都不做。**
+
+所以顺序反了（先发一条日志，再 `setup()`）**不会有任何报错**，只是你的 handler 一个都装不上。又是「静默失效」，跟 `clean_text` 那次同一类。
+
+**2. 脚本里不要写 `getLogger(__name__)`**
+
+`__name__` 的值取决于**模块是怎么被加载的**，不是文件名：
+
+| 加载方式 | `__name__` |
+|---|---|
+| `import paper_rag.ingest` | `"paper_rag.ingest"` ✅ |
+| `python scripts/build_index.py` | `"__main__"` ❌ |
+
+脚本永远是第二种。所以入口里写死一个名字：
+
+```python
+logger = logging.getLogger("paper_rag.build_index")
+```
+
+库文件里反而**应该**用 `__name__` —— 那时它等于模块路径，正好合适。
+
+**3. `logger.info("x %s", y)` 不是 `logger.info(f"x {y}")`**
+
+两者输出一样，**成本不一样**。f-string 是「先拼字符串，再交给 logger」；`%s` 是**惰性**的，级别过了才拼。级别调到 WARNING 之后，那些 INFO 行该被丢弃，但 f-string 的拼接已经白做了。日志写得多了，这个差别是真的。
+
+**4. 日志级别取代了 emoji**
+
+`print("⚠️ 找不到")` → `logger.warning("找不到 %s")`。
+
+级别本身就是「有多严重」的表达，而且**能被过滤、能被检索** —— emoji 不能。
+
+**5. 控制台的编码不是 Python 定的，是运行环境定的**
+
+同一条命令，两个 shell：
+
+| 环境 | `sys.stdout.encoding` | 中文 |
+|---|---|---|
+| Git Bash | **gbk** | 乱码 `��־�ļ�` |
+| PowerShell / PyCharm | **utf-8** | 正常 |
+
+**代码一个字没改，换个 shell 就换一套编码。**
+
+这正是 `FileHandler(LOG_FILE, ..., encoding="utf-8")` 里那个参数的意义 —— 文件流**显式**指定了编码，所以 `paper_rag.log` 在任何 shell 下跑都不乱码。
+
+> 控制台是给人当场看的，编码随环境变；
+> 文件是留档的，编码你说了算。
+
+同理，`open()` 一定要写 `encoding=`：不写就用系统默认（这里就是 gbk），存下去的中文换台机器打开就是乱码。
+
+### 踩过的坑
+
+**`logger.py` 第 24 行自己遮住了自己的 import**
+
+```python
+from paper_rag.config import DATA_DIR, LOG_LEVEL, LOG_FILE   # 第 11 行
+...
+LOG_FILE: Path = DATA_DIR / "logs" / "paper_rag.log"          # 第 24 行，遮蔽！
+```
+
+函数体里重新赋值，把 import 进来的那个名字盖住了。**值恰好一样**，所以行为没变、也不报错 —— 但这是 0B 里 `Path = Path(__file__)...` 那个坑的同一副面孔：**同一套命名空间里，后写的盖先写的。**
+
+顺带一处：第 3 行 docstring 说「被 import 时不产生任何副作用」，这是**对的**；但第 25 行注释写「← 模块层直接执行」，那是上一版 `mkdir` 还在函数外时留下的 —— **`mkdir` 早就挪进函数了，注释没跟着走。**
+
+> 注释也会过期。改代码时顺手看一眼旁边那行注释，不然它就从「帮助」变成「误导」。
+
+### 验收
+
+| 检查项 | 结果 |
+|---|---|
+| `python scripts/build_index.py` 跑完 | ✅ 237 chunks |
+| 控制台输出 | ✅ 5 行，带时间戳 / 级别 / logger 名 |
+| 日志落盘 | ✅ `data/logs/paper_rag.log` 追加 5 行 |
+| 日志文件中文 | ✅ 无乱码（显式 utf-8） |
+| 旧记录没被覆盖 | ✅ `mode="a"` 是追加不是重写 |
+| 日志里 logger 名 | ✅ `paper_rag.build_index`，不是 `__main__` |
