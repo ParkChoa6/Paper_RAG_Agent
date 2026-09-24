@@ -12,10 +12,23 @@ DATA_DIR: Path = PROJECT_ROOT / "data"  # 数据总目录
 RAW_DIR: Path = DATA_DIR / "raw"  # 原始 PDF 放这
 PROCESSED_DIR: Path = DATA_DIR / "processed"  # chunks.json、索引文件放这
 
+# 评测集：手写的中文问题 + 对应的正确 chunk。
+# 它和上面两个目录的区别是【进 git】——
+# .gitignore 的判据是「别人 clone 下来能不能自己弄出来」：
+#   chunks.json 能（跑 build_index.py 就有）→ 不进
+#   评测集不能（得读懂论文才能出题）      → 进
+EVAL_DIR: Path = DATA_DIR / "eval"
+
+# ---- 向量索引（Stage 2）----
+# 两个文件，靠【行序】绑在一起：ids[i] 描述的就是 vectors[i]。
+# 分开存是因为数据类型不同：向量是数字（二进制最省），id 是字符串（JSON 最可读）。
+VECTORS_FILE: Path = PROCESSED_DIR / "vectors.npy"  # (N, D) float32 矩阵
+IDS_FILE: Path = PROCESSED_DIR / "ids.json"  # 行序 ↔ chunk_id 的对应 + 元信息
+
 # ---- Ollama ----
 OLLAMA_HOST: str = "http://localhost:11434"  # 服务地址
 GEN_MODEL: str = "qwen2:7b"  # 生成模型
-EMB_MODEL: str = "quentinz/bge-large-zh-v1.5:latest"  # 向量模型
+EMB_MODEL: str = "bge-m3:latest"  # 原 "quentinz/bge-large-zh-v1.5:latest"  # 向量模型
 
 # ---- 检索 ----
 TOP_K: int = 5  # 每次检索取几段
