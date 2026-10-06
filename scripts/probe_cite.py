@@ -50,8 +50,13 @@ Q3 = "RAG-Token can generate different sequences for each document."
 
 # (名字, parsed, 期望, 说明)
 #   期望 0    → 必须零问题
+#   期望 N    → 必须【正好】N 条（用来钉死"同一条只说一次"这类要求）
 #   期望 ">0" → 至少要报出一个问题
 #   期望 None → 【观察项】报不报都对，取决于你把容错线画在哪儿
+#
+# ★ 为什么要有"正好 N 条"这一档：光有 0 和 ">0" 的话，
+#   「报两遍」和「报一遍」在测试里长得一模一样 —— 都是 >0。
+#   数量本身就是判据，就别只测"有没有"。
 VERIFY_CASES = [
     ("全部对得上", {"answer": "…", "used": [1, 3], "quotes": {"1": Q1, "3": Q3}},
      0, "两条引用逐字来自材料"),
@@ -85,6 +90,14 @@ VERIFY_CASES = [
     #   ⚠️ 放宽一个判据时，要测的是【新放进来的】，不是【仍然被挡住的】。
     ("★ 键带前导空格", {"answer": "…", "used": [1], "quotes": {" 1": Q1}},
      0, "键写成 ' 1' —— 编号没错、原句也真，不该报任何问题"),
+
+    # ★ 2026-10-06 补。这条测的是【条数】，不是【有没有】。
+    #   原来 ① 写的是 for n in used（used 可能带重复），同一条问题会报两遍。
+    #   而"报两遍"在 0 / ">0" 这两档下和"报一遍"长得【一模一样】——
+    #   都是 >0。所以这条必须用"正好 N 条"才钉得住。
+    #   ⚠️ 数量本身就是判据的时候，就别只测"有没有"。
+    ("★ 重复编号只报一次", {"answer": "…", "used": [9, 9], "quotes": {"9": "随便什么"}},
+     1, "9 越界，但【越界】这件事只有一件 —— 报两遍是 bug"),
 
     ("观察 · 首字母小写 + 去句号",
      {"answer": "…", "used": [1],
@@ -143,12 +156,12 @@ def report(name: str, expect, problems: list[str], note: str, crashed: str | Non
         print(f"       └─ {crashed}")
         return False
 
-    if expect == 0:
-        good = len(problems) == 0
-    elif expect == ">0":
-        good = len(problems) > 0
-    else:  # None —— 观察项，不计分
+    if expect is None:            # 观察项，不计分
         good = True
+    elif isinstance(expect, int):  # 精确条数（0 也走这里）
+        good = len(problems) == expect
+    else:                          # ">0"
+        good = len(problems) > 0
     mark = "✅" if good else ("👁" if expect is None else "❌")
     print(f"  {mark} {name:<22} 报出 {len(problems)} 条   {note}")
     for p in problems[:3]:

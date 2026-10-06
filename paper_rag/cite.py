@@ -196,25 +196,55 @@ def verify(parsed: dict, chunks: list[dict]) -> list[str]:
     quoted_set = set(quotes_by_n)
     # 注：原来那个 `if k` 是死的 —— 空键 int("") 会在 parse_response 就抛错，到不了这里。
 
+    # ★ 2026-10-06：下面四处迭代全部改成 sorted(...)。两个不同的理由，分开说。
+    #
+    #   ── ① 去重：这是【行为 bug】，量得出来 ──
+    #
+    #   ① 原来写的是 for n in used，而 ②③ 用的是 used_set。
+    #   used 里重复的编号（模型完全可能吐 [9, 9]）会把同一条问题报【两遍】：
+    #       实测 used=[9,9] → 改前 2 条，改后 1 条。
+    #   同一条问题说一次就够了。②③④ 本来就用的 set，所以只有 ① 有这毛病 ——
+    #   ★ 同一个函数里四个循环、两种写法，这本身就是 bug 的温床。
+    #
+    #   ── ② 定序：这不是 bug，是【别靠实现细节】 ──
+    #
+    #   先说清楚不是什么：它【不会 flaky】。int 的哈希不受 PYTHONHASHSEED 影响
+    #   （随机化的是 str/bytes），所以同一份输入，每次运行给的顺序【一样】。
+    #
+    #   真正的问题是：那个"一样的顺序"【不是升序】，而是
+    #       槽位 = hash(n) % 表长
+    #   的先后。实测：
+    #       set([3, 11])        → [11, 3]
+    #       set([1, 2, 33, 40]) → [40, 1, 2, 33]
+    #   看着是乱的。而我们今天看不出乱，只是因为 top-k 就几条、编号都小于表长 8，
+    #   槽位恰好就是 n 自己 —— ★ 那是【碰巧】，不是保证。
+    #   表长（8/32/128…）是 CPython 的实现细节，语言不保证 set 的迭代顺序。
+    #
+    #   ⚠️ 我第一版注释在这里写的是"迭代 set 会 flaky"—— 没量就下的结论，是错的。
+    #      量完才发现：int 稳定，只是乱序。**量过的和没量过的，是两个不同的结论。**
+    #
+    #   sorted 之后：同一份输入 → 永远同一份清单，逐字一致，且人能读。
+    #   在这么便宜的确定性和可读性面前，"省一次 O(k log k)" 不值得谈。
+
     # ① 编号越界：used 里的数字必须在 1..len(chunks) 之间
     n_chunks = len(chunks)
-    for n in used:
+    for n in sorted(used_set):
         if n < 1 or n > n_chunks:
             problems.append(f"引用 [{n}] 越界：当前只有 {n_chunks} 条材料")
 
     # ② 说了用、但交不出原句：used 里有 n，quotes 里没有 n
-    for n in used_set:
+    for n in sorted(used_set):
         if n not in quoted_set:
             problems.append(f"引用 [{n}]：声称使用但未提供原文")
 
     # ③ 交了原句、但没说过要用：quotes 里有 n，used 里没有 n
-    for n in quoted_set:
+    for n in sorted(quoted_set):
         if n not in used_set:
             problems.append(f"引用 [{n}]：提供了原文但未声明使用")
 
     # ④ 伪造引用：quotes[n] 在 chunks[n-1]["text"] 里找不到
 
-    for n in used_set & quoted_set:
+    for n in sorted(used_set & quoted_set):
         # 越界的编号已经在 ① 里报过了，这里跳过，避免索引错误
         if n < 1 or n > n_chunks:
             continue
