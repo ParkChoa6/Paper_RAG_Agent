@@ -3,13 +3,18 @@
 这是 Stage 3 的主场，也是整个 RAG 里【唯一一处你直接对模型说话】的地方。
 
     question ──┐
-               ├─▶ build_prompt ──▶ llm.generate ──▶ parse_response ──▶ 结果
-    chunks ────┘
+               ├─▶ build_prompt ──▶ llm.generate ──▶ parse_response ──┐
+    chunks ────┘                                                      │
+                            ┌─────────────────────────────────────────┘
+                            ▼
+                     cite.verify ──▶ 问题清单（Stage 4）
 
 三个函数的分工：
-    build_prompt    你 → 模型     【今天你写】整个 Stage 3 的核心
-    parse_response  模型 → 你     【今天你写】把文本变回程序能用的东西
-    answer          编排三件事    【已给】胶水，本身不含逻辑
+    build_prompt    你 → 模型     整个 Stage 3 的核心，所有约束写在这里
+    parse_response  模型 → 你     把文本变回程序能用的东西，只管【形状】
+    answer          编排三件事    胶水，本身不含逻辑
+
+    Stage 4 的引用核对在 cite.py，不在这里 —— 它变化的原因和这三个都不同。
 
 【硬性要求】不许用 LangChain。全手写一遍，你会看清 RAG 的真实面目
 就是一个 for 循环加一次 API 调用。之后再用框架，你是"选择"用，不是"只能"用。
@@ -55,9 +60,10 @@ def build_prompt(question: str, chunks: list[dict]) -> str:
 
     ── 输出格式（定死，调用方按这个写）──
 
-        {"answer": "……回答……", "used": [1, 3]}
+        {"answer": "……回答……", "used": [1, 3], "quotes": {"1": "……原文原句……"}}
 
         used 装的是【你在 prompt 里给材料编的编号】，不是 chunk_id。
+        quotes 是 Stage 4 加的：模型【逐字抄】的原文，供 cite.verify 核对。
 
     ── 提示（按顺序想，别跳）──
 
@@ -146,6 +152,21 @@ def build_prompt(question: str, chunks: list[dict]) -> str:
         "3. used 填你【实际用到】的材料编号，就是上面 [1] [2] 里的数字。"
         "答案里每个结论，你都要能指回某一号材料。"
     )
+    # ★ Stage 4 新增。这条的措辞和 cite.verify() 的严格度是【配套】的 ——
+    #
+    #   校验用精确 in 比对，那 prompt 就必须明说"逐字照抄"。
+    #   校验如果容错（归一化、模糊匹配），这句就可以放松。
+    #
+    #   两者要一起改。校验收紧了而 prompt 没说 → 真引用被误报成伪造。
+    #   这就是「约束的严格度和它宣告的严格度必须一致」——
+    #   你没有告诉它规则，却拿规则罚它，那不叫校验，叫钓鱼。
+    parts.append(
+        "4. quotes 里填你【逐字照抄】的原文句子 —— 从上面材料里原样复制，"
+        "一个字都不要改：标点、大小写、空格全部保持原样。"
+        "代码会拿它去原文里做精确比对，改一个字符就会被判定为伪造引用。"
+        "键是材料编号（写成字符串），值是你抄下来的那句话。"
+        "如果没有用到任何材料（拒答），quotes 写成空对象 {}。"
+    )
     parts.append("")
 
     # ── 5. 输出格式 ──
@@ -153,7 +174,10 @@ def build_prompt(question: str, chunks: list[dict]) -> str:
     # "不要 markdown 代码块" 这句要说 —— Day 0 验过这个模型能做到。
     parts.append("## 输出格式")
     parts.append("只输出一个 JSON 对象，不要 markdown 代码块，不要任何解释文字：")
-    parts.append('{"answer": "你的回答", "used": [1, 3]}')
+    parts.append(
+        '{"answer": "你的回答", "used": [1, 3], '
+        '"quotes": {"1": "从材料1原样抄来的那句话", "3": "从材料3原样抄来的那句话"}}'
+    )
 
     return "\n".join(parts)
 
@@ -178,7 +202,13 @@ def parse_response(raw: str) -> dict:
         raw: llm.generate() 返回的原始文本
 
     返回:
-        {"answer": str, "used": list[int]}
+        {"answer": str, "used": list[int], "quotes": dict[str, str]}
+
+        quotes 是 Stage 4 加的：材料编号（字符串）→ 从原文逐字抄来的句子。
+        它【不由本函数核对真伪】—— 那要拿到 chunks 才能做，是 cite.verify 的事。
+        本函数只保证它的【形状】：一个「数字串 → 字符串」的对象。
+        （键必须是数字串，因为下游 cite.verify 要拿它当材料编号做 int(k)。
+          契约写松了，下游就得自己再查一遍 —— 那叫两条保证，不叫一条。）
 
     ── 要处理的失败情况（一个个写）──
 
@@ -286,7 +316,7 @@ def parse_response(raw: str) -> dict:
         raise ValueError(f"JSON 顶层不是对象：{obj!r}")
 
     # ── 3. 校验字段 —— 一律抛异常，理由见上面 docstring ──
-    answer, used = obj.get("answer"), obj.get("used")
+    answer, used, quotes = obj.get("answer"), obj.get("used"), obj.get("quotes")
 
     if not isinstance(answer, str) or not answer.strip():
         raise ValueError(f"answer 缺失或为空：{obj!r}")
@@ -294,7 +324,37 @@ def parse_response(raw: str) -> dict:
     if not isinstance(used, list) or not all(isinstance(u, int) for u in used):
         raise ValueError(f"used 不是整数数组：{obj!r}")
 
-    return {"answer": answer.strip(), "used": used}
+    # Stage 4 新增。quotes 缺失时【也抛异常】，同样不兜底成 {}。
+    # 理由和上面一模一样：兜底成 {} 就等于替模型声明"我没抄任何原句"，
+    # 而它其实说了些别的。缺字段是【空缺】，不是【内容】。
+    if not isinstance(quotes, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in quotes.items()
+    ):
+        raise ValueError(f"quotes 不是「字符串 → 字符串」的对象：{obj!r}")
+
+    # ★ 2026-09-29 补：键必须是【数字串】。
+    #
+    #   原来只查到"是字符串"就停了，而 cite.verify 拿它做 int(k) ——
+    #   契约在这里断了一节：上游说"字符串就行"，下游却假定"得是数字"。
+    #
+    #   为什么这不算越界：本函数管的是【形状】，而"键长什么样"就是形状。
+    #   对照上面 used 那行 —— 它检查了【元素】的类型，这里检查【键】的类型，
+    #   本来就该是对称的。
+    #   真正属于 verify 的是「[99] 这条材料到底存不存在」，那才需要 chunks。
+    #
+    #   判据用 int() 【本身】，不用 k.isdigit()。实测：
+    #       '²'.isdigit() → True，但 int('²') 抛 ValueError    ← 守不住
+    #       ' 2'.isdigit() → False，但 int(' 2') == 2         ← 误伤
+    #   isdigit() 既拦不住它该拦的，又会误伤它不该拦的。
+    #   ★ 守卫的判据和它守的那个操作只要是两套，就会各自漂移 ——
+    #     而漂移出来的是一条"看起来在守卫"的假防线，比不写更危险。
+    for k in quotes:
+        try:
+            int(k)
+        except ValueError as e:
+            raise ValueError(f"quotes 的键不是材料编号（数字）：{k!r}") from e
+
+    return {"answer": answer.strip(), "used": used, "quotes": quotes}
 
 
 def answer(

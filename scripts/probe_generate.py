@@ -57,37 +57,58 @@ CASES = [
 #
 # 为什么离线测：模型什么时候吐出围栏是【它说了算】的。
 # 等它自然发生，你可能等一百次都等不到。构造出来，一次测完。
+# ⚠️ Stage 4 给契约加了一个【必填字段】quotes，下面一半的用例当场变红。
+#    这不是坏事 —— 这正是探针存在的意义：
+#    契约改动会立刻打断所有依赖它的测试，而不是等你上线才发现。
 PARSE_CASES = [
     # ── 必须能过：包装可以剥，内容没丢 ──
-    ("干净 JSON",       '{"answer": "A", "used": [1, 3]}',
-     "ok", {"answer": "A", "used": [1, 3]}),
-    ("markdown 围栏",   '```json\n{"answer": "A", "used": [1]}\n```',
-     "ok", {"answer": "A", "used": [1]}),
-    ("前面有寒暄",      '好的，以下是我的回答：\n{"answer": "A", "used": [1]}',
-     "ok", {"answer": "A", "used": [1]}),
-    ("后面有废话",      '{"answer": "A", "used": [1]}\n希望这对你有帮助！',
-     "ok", {"answer": "A", "used": [1]}),
-    ("围栏 + 寒暄",     '好的：\n```json\n{"answer": "A", "used": []}\n```\n完毕',
-     "ok", {"answer": "A", "used": []}),
-    ("真·拒答",         '{"answer": "资料未提及", "used": []}',
-     "ok", {"answer": "资料未提及", "used": []}),
+    ("干净 JSON",       '{"answer": "A", "used": [1, 3], "quotes": {"1": "x"}}',
+     "ok", {"answer": "A", "used": [1, 3], "quotes": {"1": "x"}}),
+    ("markdown 围栏",   '```json\n{"answer": "A", "used": [1], "quotes": {}}\n```',
+     "ok", {"answer": "A", "used": [1], "quotes": {}}),
+    ("前面有寒暄",      '好的，以下是我的回答：\n{"answer": "A", "used": [1], "quotes": {}}',
+     "ok", {"answer": "A", "used": [1], "quotes": {}}),
+    ("后面有废话",      '{"answer": "A", "used": [1], "quotes": {}}\n希望这对你有帮助！',
+     "ok", {"answer": "A", "used": [1], "quotes": {}}),
+    ("围栏 + 寒暄",     '好的：\n```json\n{"answer": "A", "used": [], "quotes": {}}\n```\n完毕',
+     "ok", {"answer": "A", "used": [], "quotes": {}}),
+    ("真·拒答",         '{"answer": "资料未提及", "used": [], "quotes": {}}',
+     "ok", {"answer": "资料未提及", "used": [], "quotes": {}}),
 
     # ── 必须炸：内容是空的，补一个值就是在编 ──
-    ("缺 used",         '{"answer": "A"}',
+    ("缺 used",         '{"answer": "A", "quotes": {}}',
      "raise", None),
-    ("answer 是空串",   '{"answer": "   ", "used": [1]}',
+    ("缺 quotes",       '{"answer": "A", "used": [1]}',
+     "raise", None),          # ← Stage 4 新增，同样的理由
+    ("answer 是空串",   '{"answer": "   ", "used": [1], "quotes": {}}',
      "raise", None),
-    ("used 不是数组",   '{"answer": "A", "used": 1}',
+    ("used 不是数组",   '{"answer": "A", "used": 1, "quotes": {}}',
      "raise", None),
-    ("used 混了字符串", '{"answer": "A", "used": [1, "2"]}',
+    ("used 混了字符串", '{"answer": "A", "used": [1, "2"], "quotes": {}}',
      "raise", None),
+    ("quotes 的值不是字符串", '{"answer": "A", "used": [1], "quotes": {"1": 42}}',
+     "raise", None),
+    ("quotes 的键不是数字", '{"answer": "A", "used": [1], "quotes": {"abc": "x"}}',
+     "raise", None),          # ← 2026-09-29 补，见 generator.py 里那段注释
+    # ★ 下面这条是【为什么判据用 int() 而不是 isdigit()】的活证据：
+    #   '²'.isdigit() → True，isdigit 版会【放行】它，
+    #   然后 cite.verify 里的 int('²') 抛 ValueError —— 崩在下游。
+    #   没有这条用例，将来有人把判据"简化"回 isdigit()，测试全绿，他永远不会知道。
+    #   测试不只是防回归，它还是【设计决定的存档】。
+    ("quotes 的键是上标 2", '{"answer": "A", "used": [1], "quotes": {"²": "x"}}',
+     "raise", None),
+    # ★ 2026-10-06 补：这条测【放宽后新接受的】，不是【被拒绝的】。
+    #   判据是 int()，所以 " 1" 和 "+1" 都算合法 —— 契约如此，就得写下来。
+    #   上一版只测了拒绝侧，结果假阳性从接受侧漏了出去（见 probe_cite.py）。
+    ("键带前导空格", '{"answer": "A", "used": [1], "quotes": {" 1": "x"}}',
+     "ok", {"answer": "A", "used": [1], "quotes": {" 1": "x"}}),
     ("压根不是 JSON",   '我认为这段材料没有提到该信息。',
      "raise", None),
     ("顶层是数组",      '[1, 2, 3]',
      "raise", None),
 
     # ── ★ 已知漏洞：它炸，但炸错了地方（报错怪模型，实际是代码切错）──
-    ("★ 已知漏洞",      '答案里有 {1,2}，JSON 是：{"answer": "A", "used": [1]}',
+    ("★ 已知漏洞",      '答案里有 {1,2}，JSON 是：{"answer": "A", "used": [1], "quotes": {}}',
      "raise", None),
 ]
 
@@ -100,7 +121,10 @@ def main() -> None:
     by_id = {c["chunk_id"]: c for c in chunks}
 
     print(f"语料 {len(chunks)} 条   {vectors.shape}")
-    print("⚠️  现在跑的是 build_prompt 的 v0（故意写笨的版本）\n")
+    # ⚠️ 这行原来写的是"现在跑的是 v0"—— v0 早就废弃了。
+    #    同一个错有两处，上次只改了文件头那处，漏了这里。
+    #    过期注释最坏的地方不是"错"，是它【读起来像真的】。
+    print("现在跑的是 build_prompt 的 v1（generator.py）。v0 的战绩见文件头。\n")
 
     for n, (label, question) in enumerate(CASES, 1):
         print(LINE)
