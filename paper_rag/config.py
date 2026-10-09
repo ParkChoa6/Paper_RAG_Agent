@@ -37,13 +37,102 @@ TOP_K: int = 5  # 每次检索取几段
 LOG_LEVEL: str = "INFO"
 LOG_FILE: Path = DATA_DIR / "logs" / "paper_rag.log"
 
-# ---- PDF 版面过滤（单位：点，1 点 = 1/72 英寸）----
-PAGE_MARGIN_X = 60  # 块 x0 小于它 → 边栏水印，丢弃
-PAGE_HEADER_Y = 60  # 块 y1 小于它 → 页眉，丢弃
-PAGE_FOOTER_Y = 730  # 块 y0 大于它 → 页脚，丢弃
+# ---- PDF 版面过滤 ----
+# 这里曾经有三条【绝对坐标】，2026-10-06 一天之内分两次全部删掉。
+# 留下的记录，因为它们说的是同一个病的三次发作。
+#
+#   第一次 · 删 x 阈值 PAGE_MARGIN_X = 60
+#       它把双栏论文的左栏整个当成「边栏水印」扔掉，实测丢 82% 的字符。
+#       病根不是数字挑错了，是【把「分辨左右栏」错当成了「过滤非正文」】：
+#       过滤是丢弃，分栏是排序。混成一步，就必然要用一个阈值去区分
+#       「左栏」和「边栏水印」—— 而这两者在坐标上根本没有差别。
+#       拆开之后：左右栏 → ingest.find_column_split()（排序）；
+#                 竖排水印 → ingest.is_rotated_block()（看文字走向，与尺寸无关）。
+#
+#   第二次 · 删 y 阈值 PAGE_HEADER_Y=60 / PAGE_FOOTER_Y=730 → 先改成比例
+#       730 是照 Letter 纸（高 792）定的，遇到高 663 的页面永远不触发。
+#       改成 PAGE_HEADER_RATIO=0.10 之后，尺寸问题没了，但更根本的问题露出来了：
+#
+#       ★ 页面顶上，「页眉」和「栏顶第一行」占的是同一个 y。
+#         实测 kg-reasoning 第 15 页有两个块 y0/H 都是 0.082，
+#         x 分别是 42.1 和 305.1 —— 那是左右两栏各自的栏顶小节标题
+#         （'E. Inconsistent Reasoning' / 'H. Knowledge Graph Reasoning Application'）。
+#         0.10 这条线把两个真标题一起误杀了。
+#         任何 y 区间都分不开它们，因为它们在几何上就是同一行。
+#
+#       能分开它们的只有【跨页重复】：页眉在 23 页里出现 12 页，标题只出现 1 页。
+#       → 见下面的「版面家具」。
+#
+#   ⚠️ 再往前追，LEARNING_LOG 里 PAGE_MARGIN_X = 108 那次是同一个病的第一次发作
+#      （当时把 108 调成 60，治的是症状）。三次的共同结构：
+#      把一个文档的经验值，写成了一条关于文档的规则。
+
+# ---- 版面家具（页眉 / 页脚 / 授权水印）----
+# 判据：一段文本【去掉数字后】在多少页上重复出现。
+# 去数字不是顺手，是必须的 —— 页眉最常见的差异就是页码/卷号：
+#     '9456 IEEE TRANSACTIONS ON PATTERN ANALYSIS ...'
+#     '9458 IEEE TRANSACTIONS ON PATTERN ANALYSIS ...'
+# 归一化后是同一个串，才数得出「12/23 页」。不归一化的话每条只出现 1 次，
+# 一条家具都找不出来。
+FURNITURE_MIN_PAGES = 3  # 至少出现在这么多页上
+FURNITURE_MIN_RATIO = 0.30  # 且至少占全文这么多比例
+# 实测（2026-10-06）：
+#   kg-reasoning 23 页 → 命中 3 条：页脚水印 23/23、奇数页书眉 12/23、偶数页书眉 11/23
+#   kg-embedding 51 页 → 命中 2 条：'# Ge et al.' 25/51、'Knowledge ... Overview #' 25/51
+# 两条阈值都留了大余量（最低的 11/23 = 48%，离 30% 还很远），换语料应该不用调。
+
+# ---- 分栏检测 ----
+# 栏间空隙只可能出现在页面中部这个区间（左右各留 30% 给正文栏本身）。
+GUTTER_SEARCH_LO = 0.30
+GUTTER_SEARCH_HI = 0.70
+# 判成双栏后，左右两边各自至少要有的块数 —— 防止把「块都挤在左边」误判成双栏。
+MIN_COLUMN_BLOCKS = 2
 
 # ---- 标题识别 ----
-HEADING_SIZE_GAP = 1.0  # 块主字号 ≥ 正文字号 + 它 → 标题块
+# ★ 2026-10-06 重写。这里原来是一个字号常量：
+#       HEADING_SIZE_GAP = 1.0   # 块主字号 ≥ 正文字号 + 它 → 标题块
+#   它是在【原来那篇 RAG 论文】上量的（正文 10.1 ↔ 标题 12.0，中间是空的）。
+#   换语料后，两篇 KG 论文双双失效 —— 详见 ingest.is_heading_block 的说明。
+#   现在改判【文本】：编号 + 结构词，两个都是学术写作的约定，不是排版的约定。
+
+# 超过它就不可能是一行标题 —— 用来把「独立成行的短标题」和
+# 「恰好以编号开头的长段落首行」分开。
+# 实测：真标题最长 97 字符（kg-embedding 的 '3 Unified Framework for …'），
+#       误判样本最短 134 字符（期刊页眉的 ISSN/DOI 那一行）。120 卡在中间。
+HEADING_MAX_CHARS = 120
+
+# 没有编号、但属于固定结构的标题词（归一化成小写后再比）。
+# 这份名单要短 —— 每加一个词，就多一类「正好等于这个词的正文块」会被吃掉。
+# 只放学术论文里位置固定的那几个。
+STRUCTURAL_HEADINGS = frozenset(
+    {
+        "abstract",
+        "introduction",
+        "conclusion",
+        "conclusions",
+        "references",
+        "reference",
+        "bibliography",
+        "acknowledgment",
+        "acknowledgments",
+        "acknowledgement",
+        "acknowledgements",
+        "appendix",
+        "index terms",
+    }
+)
+
+# ---- 参考文献：入库时丢弃 ----
+# 实测（2026-10-06）：参考文献条目占全库 53% 的 chunk
+#   kg-reasoning 346/516（67% 的 chunk、45% 的字符）
+#   kg-embedding  27/194（14% 的 chunk、40% 的字符）
+# 它们对问答没有价值，却在词面上跟任何领域问题高度重叠（一条里塞满
+# 模型名/作者名/会议名），检索时会被大量召回、挤掉真正的正文。
+#
+# ★ 判据挂在【块的 section】上，而不是「遇到 REFERENCES 就停止」——
+#   后者在参考文献不位于文末时会静默截断后面整篇。挂在 section 上，
+#   遇到 Appendix 之类还能继续正常收录。
+REFERENCE_HEADINGS = frozenset({"references", "reference", "bibliography"})
 
 # ---- 切分 ----
 # 清洗后短于它的块直接丢弃。拦的是「图里的文字」和「公式碎片」：

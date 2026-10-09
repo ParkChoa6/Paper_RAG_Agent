@@ -30,10 +30,19 @@ logger = logging.getLogger("paper_rag.build_index")
 # 为什么写死：paper_id 和标题是「人对论文的命名」，不是 PDF 里能可靠读出来的。
 # 文件里那个标题块可能是两行、可能带脚注符号，提取出来不一定干净。
 # 手工登记一张表，最可控。论文多了再换成一个 papers.yaml。
+#
+# ★ 2026-10-06 语料重置：RAG 那篇（rag-original-2005.11401.pdf）已从 data/raw/ 移除，
+#   语料转向知识图谱（KG）。原来那条登记也一并删掉 ——
+#   留着它只会让 build_index 每次打一条 "找不到 xxx，跳过" 的警告，
+#   而那种警告看多了就没人看了（这就是"报警疲劳"的起点）。
 PAPERS = {
-    "rag-original-2005.11401.pdf": (
-        "rag-2005.11401",
-        "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+    "Knowledge Graph Embedding An Overview.pdf": (
+        "kg-embedding-overview",
+        "Knowledge Graph Embedding: An Overview",
+    ),
+    "A Survey of Knowledge Graph Reasoning on Graph Types Static, Dynamic, and Multi-Modal.pdf": (
+        "kg-reasoning-survey",
+        "A Survey of Knowledge Graph Reasoning on Graph Types: Static, Dynamic, and Multi-Modal",
     ),
 }
 

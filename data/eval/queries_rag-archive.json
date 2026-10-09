@@ -1,0 +1,80 @@
+{
+  "_note": [
+    "跨语言检索评测集 —— 中文问题，英文答案。",
+    "",
+    "为什么要自己造一个：MTEB 排行榜是别人语料上的分数。",
+    "我们真正要回答的问题是「哪个模型最能把中文问题对应的英文段落排上来」，",
+    "而这个问题只能在自己的语料上量。",
+    "",
+    "字段说明：",
+    "  q       中文问题（用户会怎么问）",
+    "  targets 正确答案所在的 chunk_id，【可以有多个】——",
+    "          同一件事论文可能在好几处都讲过，只认一个是不公平的。",
+    "          计分时取其中【排名最靠前】的那个。",
+    "  why     为什么这题的答案是它（写下来，免得以后自己都忘了）",
+    "",
+    "出题原则：挑【答案唯一】的问题。有多处讲同一件事的，全部列进 targets。",
+    "如果一道题答错了，我们要能确定是模型的问题，不是题目本身有歧义。"
+  ],
+
+  "queries": [
+    {
+      "q": "RAG 训练的时候有没有直接监督它应该检索哪个文档？",
+      "targets": ["rag-2005.11401#21"],
+      "why": "原文: 'We jointly train the retriever and generator components without any direct supervision on what document should be retrieved.' —— 直接回答「没有监督」。"
+    },
+    {
+      "q": "为什么训练的时候不更新文档编码器的参数？",
+      "targets": ["rag-2005.11401#23"],
+      "why": "原文: 'Updating the document encoder BERTd during training is costly as it requires the document index to be updated.' —— 因果都在这一句里。"
+    },
+    {
+      "q": "RAG-Sequence 为什么不能只做一次 beam search 就解码完？",
+      "targets": ["rag-2005.11401#28"],
+      "why": "原文: 'For RAG-Sequence, the likelihood p(y|x) does not break into a conventional per-token likelihood, hence we cannot solve it with a single beam search.' —— 唯一讲这个的地方。"
+    },
+    {
+      "q": "RAG 只能做抽取式问答吗？",
+      "targets": ["rag-2005.11401#31"],
+      "why": "原文: 'RAG models can go beyond simple extractive QA and answer questions with free-form, abstractive text generation.' —— 一句话就是答案。"
+    },
+    {
+      "q": "如果维基百科里根本查不到答案，RAG 还能回答吗？",
+      "targets": ["rag-2005.11401#33"],
+      "why": "原文: 'some MSMARCO questions cannot be answered using Wikipedia alone. Here, RAG can rely on parametric knowledge to generate reasonable responses.' —— 'parametric knowledge' 是关键词。"
+    },
+    {
+      "q": "RAG 在事实核查任务上比最先进的系统差多少？",
+      "targets": ["rag-2005.11401#50"],
+      "why": "原文: 'For 3-way classification, RAG scores are within 4.3% of state-of-the-art models' —— 具体数字 4.3% 只在这里。"
+    },
+    {
+      "q": "RAG 在开放域问答任务上刷新过记录吗？",
+      "targets": ["rag-2005.11401#37"],
+      "why": "原文: 'On all four open-domain QA tasks, RAG sets a new state of the art' —— 直接结论。"
+    },
+    {
+      "q": "让模型生成答案，而不是从原文里抽一段，有什么好处？",
+      "targets": ["rag-2005.11401#38"],
+      "why": "原文: 'There are several advantages to generating answers even when it is possible to extract them.' —— 注意这题问法和答案用词完全对不上：'生成' vs generate，'抽取' vs extract。"
+    },
+    {
+      "q": "RAG-Token 和 RAG-Sequence 这两个模型有什么不同？",
+      "targets": [
+        "rag-2005.11401#16",
+        "rag-2005.11401#25",
+        "rag-2005.11401#28"
+      ],
+      "why": "论文分了好几处讲：2.1 Models 各自定义，2.5 Decoding 讲解码差异。三个都算对，取排名最前的。"
+    },
+    {
+      "q": "RAG 是怎么把检索到的文档融进生成过程里的？",
+      "targets": [
+        "rag-2005.11401#8",
+        "rag-2005.11401#16",
+        "rag-2005.11401#14"
+      ],
+      "why": "用户最初提的那个问题。注意它【确实有多个合理答案】—— 所以列了三个 targets。之前用它单独测的时候把真答案顶到第 3，就是因为它本来就不是唯一答案。"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "_note": [
-    "跨语言检索评测集 —— 中文问题，英文答案。",
+    "检索评测集 —— 中文问题，英文答案。",
     "",
     "为什么要自己造一个：MTEB 排行榜是别人语料上的分数。",
     "我们真正要回答的问题是「哪个模型最能把中文问题对应的英文段落排上来」，",
@@ -11,70 +11,140 @@
     "  targets 正确答案所在的 chunk_id，【可以有多个】——",
     "          同一件事论文可能在好几处都讲过，只认一个是不公平的。",
     "          计分时取其中【排名最靠前】的那个。",
-    "  why     为什么这题的答案是它（写下来，免得以后自己都忘了）",
+    "  why     为什么这题的答案是它（附原文英文句子，免得以后自己都忘了）",
+    "  guess   ★ 出题人【跑之前】写下的预测排名。见下面「为什么要 guess」。",
     "",
     "出题原则：挑【答案唯一】的问题。有多处讲同一件事的，全部列进 targets。",
-    "如果一道题答错了，我们要能确定是模型的问题，不是题目本身有歧义。"
+    "如果一道题答错了，我们要能确定是模型的问题，不是题目本身有歧义。",
+    "",
+    "── 2026-10-06 · 语料重置 ──",
+    "原 10 道题全部属于 RAG 论文（rag-2005.11401），该论文已从语料移除，题目作废。",
+    "原题存档在 queries_rag-archive.json ——【别删】，它是格式与出题原则的样板。",
+    "",
+    "── 2026-10-06 · 新语料的第一组题 ──",
+    "语料：两篇【相邻主题】的 KG 综述。",
+    "  kg-embedding-overview  讲 KGE：把实体/关系嵌成向量，做链接预测",
+    "  kg-reasoning-survey    讲 KGR：在图上推理出新事实，按图类型（静态/时序/多模态）分",
+    "两篇都大量出现 knowledge graph / embedding / reasoning，互为强干扰项 ——",
+    "这比以前跨领域（RAG 那篇）的干扰难得多，是好事：能测出模型分不分得清「同领域不同问题」。",
+    "",
+    "★ 为什么要 guess（这一条是给自己立的规矩）：",
+    "  出题人是我，实现也是我。我出的题会不自觉绕开我自己实现里的弱点。",
+    "  抵消办法有两条：",
+    "    1. 故意塞进我【预期会失败】的题（见 C 组），并预先写死预测排名；",
+    "    2. 跑完之后不许改 guess。预测错就是错，那才是信息。",
+    "  没有 guess，跑完再回头说「我早就知道这题会挂」——那是事后编的，一分钱不值。",
+    "",
+    "四组题的设计意图：",
+    "  A 组 基线   答案和问题有词面交集，做不对说明整个链路断了，先修管道再谈模型",
+    "  B 组 语义   问题里没有任何一个能直接命中的英文词，必须靠跨语言语义",
+    "  C 组 反锚定 【我预期会失败】的题，用来暴露我自己实现里的弱点",
+    "  D 组 辨析   和 A 组某题只差一个词，专门测「两篇相邻论文分不分得开」"
   ],
 
   "queries": [
     {
-      "q": "RAG 训练的时候有没有直接监督它应该检索哪个文档？",
-      "targets": ["rag-2005.11401#21"],
-      "why": "原文: 'We jointly train the retriever and generator components without any direct supervision on what document should be retrieved.' —— 直接回答「没有监督」。"
-    },
-    {
-      "q": "为什么训练的时候不更新文档编码器的参数？",
-      "targets": ["rag-2005.11401#23"],
-      "why": "原文: 'Updating the document encoder BERTd during training is costly as it requires the document index to be updated.' —— 因果都在这一句里。"
-    },
-    {
-      "q": "RAG-Sequence 为什么不能只做一次 beam search 就解码完？",
-      "targets": ["rag-2005.11401#28"],
-      "why": "原文: 'For RAG-Sequence, the likelihood p(y|x) does not break into a conventional per-token likelihood, hence we cannot solve it with a single beam search.' —— 唯一讲这个的地方。"
-    },
-    {
-      "q": "RAG 只能做抽取式问答吗？",
-      "targets": ["rag-2005.11401#31"],
-      "why": "原文: 'RAG models can go beyond simple extractive QA and answer questions with free-form, abstractive text generation.' —— 一句话就是答案。"
-    },
-    {
-      "q": "如果维基百科里根本查不到答案，RAG 还能回答吗？",
-      "targets": ["rag-2005.11401#33"],
-      "why": "原文: 'some MSMARCO questions cannot be answered using Wikipedia alone. Here, RAG can rely on parametric knowledge to generate reasonable responses.' —— 'parametric knowledge' 是关键词。"
-    },
-    {
-      "q": "RAG 在事实核查任务上比最先进的系统差多少？",
-      "targets": ["rag-2005.11401#50"],
-      "why": "原文: 'For 3-way classification, RAG scores are within 4.3% of state-of-the-art models' —— 具体数字 4.3% 只在这里。"
-    },
-    {
-      "q": "RAG 在开放域问答任务上刷新过记录吗？",
-      "targets": ["rag-2005.11401#37"],
-      "why": "原文: 'On all four open-domain QA tasks, RAG sets a new state of the art' —— 直接结论。"
-    },
-    {
-      "q": "让模型生成答案，而不是从原文里抽一段，有什么好处？",
-      "targets": ["rag-2005.11401#38"],
-      "why": "原文: 'There are several advantages to generating answers even when it is possible to extract them.' —— 注意这题问法和答案用词完全对不上：'生成' vs generate，'抽取' vs extract。"
-    },
-    {
-      "q": "RAG-Token 和 RAG-Sequence 这两个模型有什么不同？",
+      "q": "RotatE 把关系建模成什么操作？",
       "targets": [
-        "rag-2005.11401#16",
-        "rag-2005.11401#25",
-        "rag-2005.11401#28"
+        "kg-embedding-overview#39",
+        "kg-embedding-overview#131"
       ],
-      "why": "论文分了好几处讲：2.1 Models 各自定义，2.5 Decoding 讲解码差异。三个都算对，取排名最前的。"
+      "why": "原文: 'RotatE [94] models entities in the complex vector space and interprets relations as rotations instead of translations.' —— 后半句就是答案。\n#131 是 3.3 节的复现: 'Derivation of RotatE [94]. We can derive the scoring function of RotatE from CompoundE-Head by setting the translation component to I' —— 同一件事的第二处，读到这里也能答出来。\n不列 #132（'fr(h,t)=∥I·Rr·I·h−t∥=∥h◦r−t∥'）——那是纯公式碎片，人读到它学不到「是旋转」。",
+      "guess": "1"
     },
     {
-      "q": "RAG 是怎么把检索到的文档融进生成过程里的？",
+      "q": "TransE 的核心思想是什么？",
       "targets": [
-        "rag-2005.11401#8",
-        "rag-2005.11401#16",
-        "rag-2005.11401#14"
+        "kg-embedding-overview#28"
       ],
-      "why": "用户最初提的那个问题。注意它【确实有多个合理答案】—— 所以列了三个 targets。之前用它单独测的时候把真答案顶到第 3，就是因为它本来就不是唯一答案。"
+      "why": "原文: 'TransE [7] is one of the first KGE models that interpret relations between entities as translation operations in vector space.' —— 一句话说完。\n单 target：这是 TransE 的【定义句】，不存在第二处更清楚的表述。",
+      "guess": "1"
+    },
+    {
+      "q": "静态知识图谱推理的模型按技术分成哪三类？",
+      "targets": [
+        "kg-reasoning-survey#57"
+      ],
+      "why": "原文: 'Static KGR models can be categorized into embedding-based, path-based, and rule-based models.' —— 三类齐全，就在这一句。\n风险：同一页的 #56（'We systematically introduce 117 static KGR models based on techniques and scenarios'）也含 techniques/scenarios 和 models，但不列三类。【如果 #56 排到第 1，这题就算挂】——这正是我想看的：模型分不分得清「说要做某事」和「说做成了哪三类」。",
+      "guess": "1 或 2（#56 是最近的干扰）"
+    },
+    {
+      "q": "多模态知识图谱分为哪两种？",
+      "targets": [
+        "kg-reasoning-survey#35",
+        "kg-reasoning-survey#44"
+      ],
+      "why": "原文 #35: 'Typically, there are two multi-modal KG [21], i.e., N-MMKG and A-MMKG' —— 直接回答「哪两种」。\n原文 #44: 'there exist slight differences between N-MMKG and A-MMKG, i.e., the multi-modal information only occurs in attributes to assist reasoning in A-MMKG, while in N-MMKG, it may exist as the queried entities.' —— 讲的是【两种的区别】，读到它也算答出来了。\n不列 #31（'Fig. 3. Two types of multi-modal knowledge graphs.'）——图注只有 50 字，人读它得不到 N/A 这两个名字。",
+      "guess": "2~4（#35 开头是 'Definition 3:'，和口语问题词面差得远）"
+    },
+    {
+      "q": "为什么要把知识图谱的实体嵌入到双曲空间里？",
+      "targets": [
+        "kg-embedding-overview#38",
+        "kg-embedding-overview#37"
+      ],
+      "why": "原文 #38: 'The negative curvature introduced by hyperbolic space is empirically better in capturing the hierarchical structure in KGs.' —— 因（负曲率）和果（更会抓层次结构）都在这一句，是标准答案。\n原文 #37 讲了 MuRP 把实体嵌在 Poincaré ball of hyperbolic space 里，读到这里知道「有人这么做了」，但没说为什么。\n两个都列：问到原因，读到 #37 也能顺出「因为层次结构」。",
+      "guess": "1 或 2（'双曲空间'→'hyperbolic space' 是 bge-m3 该跨过去的翻译）"
+    },
+    {
+      "q": "自对抗负采样是哪篇工作提出来的？",
+      "targets": [
+        "kg-embedding-overview#68",
+        "kg-embedding-overview#40"
+      ],
+      "why": "原文 #68: 'Self adversarial negative sampling was proposed in RotatE [94] and can be defined as,' —— 主语+动词+出处，答案的唯一出处。\n原文 #40: 'The self-adversarial negative sampling strategy also contributes to RotatE's significant performance improvement compared to its predecessors.' —— 同一件事，带连字符的写法。\n★ 两个 target 的写法不同（'self adversarial' 空格 vs 'self-adversarial' 连字符）——分词器怎么切这两种写法，本身就是一条要看的证据。",
+      "guess": "1"
+    },
+    {
+      "q": "时序知识图谱推理模型按融合时间信息的方式分成哪两类？",
+      "targets": [
+        "kg-reasoning-survey#106"
+      ],
+      "why": "原文: 'Reasoning techniques are about how the temporal KGR models integrate time information. According to it, temporal KGR models can be categorized into RNN-based and RNN-agnostic models.' —— 问题里的『融合时间信息的方式』和原文 'integrate time information' 是同一个意思的两种说法，跨语言还得跨一次意译。",
+      "guess": "1~3"
+    },
+    {
+      "q": "路径型模型和规则型模型各有什么优缺点？",
+      "targets": [
+        "kg-reasoning-survey#97"
+      ],
+      "why": "原文（3.3-C 节五条观察的第 2、3 条）: '(2) Path-based and Rule-based models are more explainable than embedding-based models, but they usually suffer from limited expressive ability and huge complexity of time and space.' + '(3) Most of the path-based models are more suitable for transductive reasoning ..., while Rule-based models naturally inherit the inductive ability ...'\n★ 这题是【综述类答案】的样本：答案不是一句话，是同一段里相邻的两条。列单 target（#97 整段 1594 字），因为人读到这一段就能答。\n预期挂点：问题是中文『优缺点』，原文是 'more explainable ... but they usually suffer from limited expressive ability' —— 没有一个字面重叠。",
+      "guess": "3~8"
+    },
+    {
+      "q": "CompoundE3D 的剪切算子是复合了哪三个算子？",
+      "targets": [
+        "kg-embedding-overview#122",
+        "kg-embedding-overview#123"
+      ],
+      "why": "原文 #122: 'The shear operator is the result of compounding 3 operators: Hyz, Hxz, and Hxy' —— 三个名字齐全。\n原文 #123: 'Matrix Hyz has a physical meaning - the shear transformation that shifts the y- and z- components by a factor of the x component.' —— 三个算子各自的物理含义。\n★ 这题【我预期会挂】，故意出的。原因：它落在 3.2 节，那一节全是纯矩阵公式 chunk（#98 '#98: cos(θ) −sin(θ) vx sin(θ) cos(θ) vy 0 0 1' 这种），彼此高度雷同。而且 #122 的 section 是被误判成标题的垃圾串 '1 Shy'，说明这一带的版面结构本来就乱。\n★ 更糟的是：section 字段【不参与向量化】（eval_embed 里 texts = [c['text']]），所以 '1 Shy' 这个错误的 section 不会帮倒忙，但也意味着没有任何上下文能救 #122。",
+      "guess": ">5（预期失败）"
+    },
+    {
+      "q": "论文里的 KGE 模型 Hits@10 对比数据是从哪个网站来的？",
+      "targets": [
+        "kg-embedding-overview#149",
+        "kg-embedding-overview#150",
+        "kg-embedding-overview#151"
+      ],
+      "why": "原文 #149/#150/#151: 'Figure 5: HITS@10 score of previous KGE models for datasets. Source: https://paperswithcode.com/sota' —— 三页各一次（图跨了 3 页），答案唯一。\n★ 这题【我预期会挂】，故意出的。原因：问题里任何一个词都没法和答案对上。「网站」↔ 'https://paperswithcode.com' 之间没有可学的语义桥梁——嵌入模型不认识 URL 是什么。\n★ 不列 #148（'We also show a comparison of the Hits@10 performance ... in Figure 5'）——我核过，#148 全文【没有】提 paperswithcode，它只指了个 Figure 5。列进去就是虚增分数。",
+      "guess": "失败（排名 >10）"
+    },
+    {
+      "q": "ComplEx 的评分函数里，⟨·,·,·⟩ 和 Re(·) 分别表示什么？",
+      "targets": [
+        "kg-embedding-overview#51"
+      ],
+      "why": "原文: 'where ⟨·, ·, ·⟩denotes trilinear product, and Re(·) means taking the real part of a complex value.' —— 两个符号各自的含义，就这一句。\n★ 这题【我预期会挂】，但它挂的方式是这组题里最有价值的一条。\n  问题是这句话在 #51，而『ComplEx 的评分函数』这句话在上一页的 #50。两块被【分页】切开了：\n    #50 结尾: 'The ComplEx scoring function can be defined as,'\n    #51 开头: 'where ⟨·, ·, ·⟩denotes ...'\n  #51 以 'where' 开头，主语和主题全丢了，它向量化的结果由后半段的 SimplE / Canonical Polyadic 主导。\n☆ 我预测：#50 会排第 1（因为『ComplEx 评分函数』在它里面），但这题 targets 只有 #51 → 【算挂】。\n  如果真这样，暴露的不是模型的毛病，是【我的切分把一句话劈成了两半】。那是一条要单独处理的线索。",
+      "guess": "2（排在第 1 的是 #50，但 #50 不是 target → 算挂）"
+    },
+    {
+      "q": "知识图谱嵌入模型是按什么标准分类的？",
+      "targets": [
+        "kg-embedding-overview#26"
+      ],
+      "why": "原文: 'KGE models are often categorized based on scoring functions and tools applied to model entity-relation interactions and representations. In this paper, we mainly discuss two major classes, namely 1) distance-based models, and 2) semantic matching models.' —— 分类依据（scoring functions / tools）+ 分出的两类，都在这一句。\n★ 这题和上面 A 组的『静态 KGR 按技术分成哪三类』是【一对兄弟题】：\n    句式和问法几乎一样，答案却是两篇不同论文的不同内容（三类 vs 两类）。\n  两篇是相邻主题、都在讲 knowledge graph，能不能分开，就看这一对。\n  如果两道题互相抢答（比如这题把 kg-reasoning#57 排上来），说明模型只认『分类』这个词，没认『嵌入』和『推理』的区别。",
+      "guess": "1（并对 A 组那题构成干扰）"
     }
   ]
 }
