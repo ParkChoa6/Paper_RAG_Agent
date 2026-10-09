@@ -56,12 +56,25 @@ LINE = "=" * 74
 INDUCE_SEEDS = (1, 2, 3, 4)
 
 # ── 离线测试用的假材料：短、可控、每条都有明显特征，方便算准期望 ──
+#
+# ★ 2026-10-10：这里原来【没有 title】，然后 render_material 开始读 title ——
+#   六个离线关卡当场全炸 KeyError，计分从 9/9 掉到 3/9。
+#
+#   修的是这份假材料，不是 render_material：
+#     ❌ chunk.get('title', '')  —— 那是"补一个值"，而缺 title 会静默产出
+#        一个【没有判别器】的表头，正好把 2026-10-10 刚修掉的那个 bug 放回来。
+#     ✅ 假材料必须和真材料同形。它当时是照着旧 schema 手搓的，
+#        **它本来就在说谎** —— 离线关卡测的形状和生产跑的形状不是同一个。
+#        这种谎平时不响，只在 schema 变更时炸，而炸的时候看起来像"产品坏了"。
+#
+#   真 chunks.json 的两篇论文各有一个 title，167/170 块全对（已核对）。
+FAKE_TITLE = "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
 FAKE = [
-    {"chunk_id": "t#1", "section": "2.1", "page_start": 2,
+    {"chunk_id": "t#1", "title": FAKE_TITLE, "section": "2.1", "page_start": 2,
      "text": "We marginalize the latent documents with a top-K approximation."},
-    {"chunk_id": "t#2", "section": "2.1", "page_start": 2,
+    {"chunk_id": "t#2", "title": FAKE_TITLE, "section": "2.1", "page_start": 2,
      "text": "The retriever provides latent documents conditioned on the input."},
-    {"chunk_id": "t#3", "section": "3.2", "page_start": 5,
+    {"chunk_id": "t#3", "title": FAKE_TITLE, "section": "3.2", "page_start": 5,
      "text": "RAG-Token can generate different sequences for each document."},
 ]
 

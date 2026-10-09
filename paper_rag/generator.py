@@ -28,6 +28,14 @@ from paper_rag.llm import generate
 
 logger = logging.getLogger(__name__)
 
+# 表头里论文标题的截断长度。★ 魔法数字，但是【量出来的】，不是拍的。
+#
+# 为什么必须截断、为什么是 40 —— 见 render_material 的 docstring，那里有同场 A/B：
+#   太长（70 或全文）→ 模型干脆不交 quotes
+#   太短（20/25）    → 判别词被切断，模型又分不清两篇
+# 它成立的隐含前提：判别词出现在标题前 40 字内。换论文时要重新量。
+TITLE_MAX = 40
+
 
 def render_material(number: int, chunk: dict) -> str:
     """渲染【一条材料】—— 和模型看到的完全一致，一字不差。
@@ -52,16 +60,77 @@ def render_material(number: int, chunk: dict) -> str:
     ── 为什么不是"把 quotes 开头的 [n] 剥掉" ──
 
       那是【补偿】一个我们自己制造的偏差，不是【消除】它。
-      它贴着当前的表头格式写死；哪一天表头改了（比如按下面那条待办，
-      把论文标题也加进来），它立刻失效，而且是【静默失效】——
+      它贴着当前的表头格式写死；表头一改，它立刻失效，而且是【静默失效】——
       真引用又开始被误报，没人会记得去改那个剥离函数。
 
       抽成共用函数之后，表头怎么改，两边同时改，永远一致。
+      ★ 这个预言在 2026-10-10 兑现了：表头加了论文标题（见下），
+        cite.verify 一行没动，自动跟上。
+
+    ── ★ 表头里放什么：论文标题是【判别器】，不是装饰 ──
+
+      2026-10-10 实测（端到端，问「知识图谱嵌入模型是按什么标准分类的？」）。
+      这道题检索没问题，标准答案就在材料 [2]（那篇的摘要）里：
+        "we focus on two main branches of KG embedding (KGE) design:
+         1) distance-based methods and 2) semantic matching-based methods"
+
+      材料 [5] 来自【另一篇】（推理综述）：
+        "Static KGR models can be categorized into embedding-based,
+         path-based, and rule-based models"
+
+      模型用了 [5]，答「嵌入基 / 路径基 / 规则基」—— 张冠李戴，而 verify 报 0 条
+      （[5] 那句原文确实存在，引用是真的）。这是 Stage 4 结构上抓不住的那一类。
+
+      隔离实验（同题同参，只换材料）：只给 [2] → 答对；[2]+[5] → 答错。
+      **[5] 在场，就把 [2] 盖住了。** 不是"多了条噪音"，是压制。
+
+      然后只改表头，5 个 seed 各跑一遍：
+
+        表头                                判定
+        [1] （ABSTRACT，第 1 页）            错 错 错 错 错
+        [1] （kg-embedding-overview · …）    混 混 混 混 混   ← 归属修好了，答案还是混
+        [1] （Knowledge Graph Embedding: An Overview · …）  对 对 对 对 对
+
+      三级梯度，单调。**判别的关键不是"有没有出处"，是"出处的名字里有没有那两个字"**：
+      `kg-embedding-overview` 修好了归属（模型认出 [5] 是推理那篇），
+      但只有真标题 "Knowledge Graph **Embedding**" 才让模型敢把 [5] 排除掉。
+
+      ★ 这不是"多加信息总没坏处"。同一个实验里，加 paper_id 是个【半吊子修法】：
+        它让模型说对了出处、却照旧把错的分类塞进答案 —— 比原来更难发现。
+      ★ 换一篇论文之前先看 title 干不干净：当时两篇各 167/170 块，
+        title 每篇只有一个、全对。（section 里倒是有 12 块垃圾，见遗留表。）
+
+    ── ★ 标题【必须截断】，而且 40 这个数字是量出来的 ──
+
+      加【全文】标题会弄坏另一个问题（问「静态和时序推理的区别」，模型交
+      used=[3] 但 quotes={} —— 干脆不交引用了）。同场 A/B：
+
+        表头                     Q2（失败 A）      Q3（交没交引用）
+        old（只有 section）       错 错 错 错 错    交 交 交 交 交
+        title[:40]               对 对 对 对 对    交 交 交 交 交
+        title 全文               对 对 对 对 对    空 空 空 空 空
+
+      两个约束把可用区间夹出来（同一场扫截断长度）：
+        太短 → 判别词被切断   截断 20/25 时 "Reasoning" 没了 → Q2 错/混
+        太长 → 模型不交引用   截断 70 时 Q3 全空
+      40 落在两侧都有余量的位置。**这是魔法数字，不假装不是** ——
+      它成立的隐含前提是「判别词出现在标题前 40 字内」
+      （本文两篇：Embedding 第 16 位、Reasoning 第 30 位）。
+      ★ 换论文时要【重新量一遍】，不能假设它还成立。
+
+      ⚠️ 量这个时踩了一个大坑，记在这儿：**seed 跨会话不可复现。**
+        同一组参数，不同时间跑，结果不同。有一次测 45/50 两个长度，
+        测出完全一样的模式（seed 1 交、2~6 空）—— 两个不同长度给出同一个
+        模式，说明那一场里表头根本没起作用，是会话状态在主导，那组数据作废。
+      ★ 所以比较方案的规矩是：**所有变体必须在同一个进程里跑完，
+        并且要带一个已知基线当"温度计"**。基线的表现要是和上次不一样，
+        这一整场作废，不能拿来下结论。
 
     ── 代价（说清楚，别假装没有）──
 
       表头从此【也变成可被引用的文本】了。模型抄一句 "2.1 Distance-based Models"
-      当 quotes 也能通过校验 —— 那是真文本，只是没营养。
+      或标题本身当 quotes 也能通过校验 —— 那是真文本，只是没营养。
+      加标题把这个可引用面又扩大了一点。
       这个代价我们认：它要求模型做一件很蠢的事才会触发，
       而现在的 bug 是【必然触发】的。必然的假警报 > 罕见的漏网，
       理由见本文件另一处：用户学会无视警报之后，校验就等于不存在。
@@ -73,7 +142,18 @@ def render_material(number: int, chunk: dict) -> str:
     返回:
         str —— 表头 + 换行 + 正文。【不含】材料之间的空行分隔符。
     """
-    return f"[{number}] （{chunk['section']}，第 {chunk['page_start']} 页）\n{chunk['text']}"
+    # 表头三段：编号 / 论文标题 / 章节 + 页码。缺一不可，各有各的用处：
+    #   编号      —— used 和 quotes 里的数字，指的就是它
+    #   论文标题  —— 判别器。两篇是相邻主题，没有它模型分不清谁是谁（见上面的实测）
+    #   章节+页码 —— 给人看的出处，也是 quotes 带表头时能对上的那部分
+    #
+    # 注意标题是【截断】的（TITLE_MAX），不是全文 —— 全文会弄坏 Q3，理由见 docstring。
+    # 给人看的那一侧（scripts/ask.py）印的是全文，不截断：那里不受模型脾气影响。
+    return (
+        f"[{number}] （{chunk['title'][:TITLE_MAX]} · {chunk['section']}，"
+        f"第 {chunk['page_start']} 页）\n"
+        f"{chunk['text']}"
+    )
 
 
 def build_prompt(question: str, chunks: list[dict]) -> str:
@@ -86,13 +166,17 @@ def build_prompt(question: str, chunks: list[dict]) -> str:
                   "RAG 是怎么把检索到的文档融进生成过程的？"
         chunks:   top_k() 的结果，每条是一个 dict（来自 chunks.json）：
                     {
-                      "chunk_id":   "rag-2005.11401#8",
+                      "chunk_id":   "kg-embedding-overview#8",
                       "text":       "……正文……",
-                      "section":    "3.2 Models",
-                      "page_start": 4,
-                      "page_end":   4,
-                      "paper_id":   "rag-2005.11401",
+                      "paper_id":   "kg-embedding-overview",
+                      "title":      "Knowledge Graph Embedding: An Overview",
+                      "section":    "ABSTRACT",
+                      "page_start": 1,
+                      "page_end":   1,
                     }
+                  ★ 注意里面【有 title】。它不是装饰 —— 表头要拿它做判别器，
+                    两篇论文主题相邻时，没有它模型分不清哪条材料属于哪篇。
+                    见 render_material 的 docstring。
 
     返回:
         str —— 完整的 prompt

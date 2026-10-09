@@ -50,9 +50,13 @@ def show(result: dict, quiet: bool) -> None:
 
     if not quiet:
         print(f"\n--- 检索到 {len(result['retrieved'])} 条 ---")
+        # ★ 论文标题必须印出来。2026-10-10：模型答错了一条（拿推理那篇的分类法
+        #   回答了嵌入模型的问题），而这份输出里【看不出】每条材料来自哪篇 ——
+        #   要自己回去翻 chunks.json 才知道。失败能藏这么久，就是因为这个。
+        #   出处不只是给模型看的判别器，也是给人看的 —— 两边都得有。
         for i, r in enumerate(result["retrieved"], 1):
             c = r["chunk"]
-            print(f"  [{i}] {r['score']:+.4f}  {c['chunk_id']}  ({c['section']}，第 {c['page_start']} 页)")
+            print(f"  [{i}] {r['score']:+.4f}  {c['title']}  ({c['section']}，第 {c['page_start']} 页)")
             print(f"      {c['text'][:80]}")
 
     print(f"\n--- 结果 [{MARK.get(result['status'], result['status'])}] ---")
