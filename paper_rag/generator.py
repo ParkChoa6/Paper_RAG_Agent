@@ -29,6 +29,53 @@ from paper_rag.llm import generate
 logger = logging.getLogger(__name__)
 
 
+def render_material(number: int, chunk: dict) -> str:
+    """渲染【一条材料】—— 和模型看到的完全一致，一字不差。
+
+    ══════════ 为什么这个函数必须存在 ══════════
+
+    ★ 它是 build_prompt() 和 cite.verify() 的【共用函数】。两边必须调同一个，
+      这不是"代码复用"的洁癖，是【正确性】的要求：
+
+        build_prompt 给模型看的是：  「表头 + 正文」
+        cite.verify  拿来比对的是：  「正文」
+
+      两者的差，正好是表头。模型把表头一起抄进 quotes（它会这么干 ——
+      表头就写在材料里面，它分不清哪里算"材料"）时，
+      精确匹配就找不到 → 一条【真引用】被报成【伪造】。
+
+      实测（2026-10-09，第一次端到端跑就撞上）：
+        模型抄的： "[1] RotatE [94] models entities in the complex vector space…"
+        源文本是：       "RotatE [94] models entities in the complex vector space…"
+        → verify 报「原文中找不到对应内容（疑似伪造）」
+
+    ── 为什么不是"把 quotes 开头的 [n] 剥掉" ──
+
+      那是【补偿】一个我们自己制造的偏差，不是【消除】它。
+      它贴着当前的表头格式写死；哪一天表头改了（比如按下面那条待办，
+      把论文标题也加进来），它立刻失效，而且是【静默失效】——
+      真引用又开始被误报，没人会记得去改那个剥离函数。
+
+      抽成共用函数之后，表头怎么改，两边同时改，永远一致。
+
+    ── 代价（说清楚，别假装没有）──
+
+      表头从此【也变成可被引用的文本】了。模型抄一句 "2.1 Distance-based Models"
+      当 quotes 也能通过校验 —— 那是真文本，只是没营养。
+      这个代价我们认：它要求模型做一件很蠢的事才会触发，
+      而现在的 bug 是【必然触发】的。必然的假警报 > 罕见的漏网，
+      理由见本文件另一处：用户学会无视警报之后，校验就等于不存在。
+
+    参数:
+        number: 材料编号，从 1 开始（就是 used / quotes 里那个数字）
+        chunk:  chunks.json 里的一条
+
+    返回:
+        str —— 表头 + 换行 + 正文。【不含】材料之间的空行分隔符。
+    """
+    return f"[{number}] （{chunk['section']}，第 {chunk['page_start']} 页）\n{chunk['text']}"
+
+
 def build_prompt(question: str, chunks: list[dict]) -> str:
     """把「问题 + 检索到的材料」拼成一段给模型的 prompt。
 
@@ -64,6 +111,8 @@ def build_prompt(question: str, chunks: list[dict]) -> str:
 
         used 装的是【你在 prompt 里给材料编的编号】，不是 chunk_id。
         quotes 是 Stage 4 加的：模型【逐字抄】的原文，供 cite.verify 核对。
+        ★ 必须是【英文原文】，不许翻译 —— 语料是英文、答案是中文，
+          这个落差会诱导模型把材料译成中文再当引用交。见下面第 4 条。
 
     ── 提示（按顺序想，别跳）──
 
@@ -126,8 +175,12 @@ def build_prompt(question: str, chunks: list[dict]) -> str:
     for i, c in enumerate(chunks, 1):
         # section 和页码现在【必须】放进去 —— 它们是 Stage 4「引用点回原文」
         # 的唯一依据。等 Stage 4 再想加，prompt 就得重写一遍。
-        parts.append(f"[{i}] （{c['section']}，第 {c['page_start']} 页）")
-        parts.append(c["text"])
+        #
+        # ★ 排版走 render_material()，不许在这里手写 ——
+        #   cite.verify 拿同一个函数重建这段文本做比对。
+        #   在这里多写一行、少写一行，就会造出【两边看到的东西不一样】的 bug，
+        #   而那个 bug 的表现是"真引用被报成伪造"，没人会往这里查。
+        parts.append(render_material(i, c))
         # 空行是【分隔符】。两段材料首尾相接，模型会读成一段连续的话。
         parts.append("")
 
@@ -154,17 +207,32 @@ def build_prompt(question: str, chunks: list[dict]) -> str:
     )
     # ★ Stage 4 新增。这条的措辞和 cite.verify() 的严格度是【配套】的 ——
     #
-    #   校验用精确 in 比对，那 prompt 就必须明说"逐字照抄"。
-    #   校验如果容错（归一化、模糊匹配），这句就可以放松。
+    #   校验用【归一化后】比对（转小写 / 标点换空格 / 压空白，见 cite._norm），
+    #   不是精确 in。所以 prompt 可以说"逐字照抄"而不必担心标点差异被误报。
+    #   哪天校验改成精确 in，这句就要跟着收紧。
     #
     #   两者要一起改。校验收紧了而 prompt 没说 → 真引用被误报成伪造。
     #   这就是「约束的严格度和它宣告的严格度必须一致」——
     #   你没有告诉它规则，却拿规则罚它，那不叫校验，叫钓鱼。
+    #
+    # ★ 2026-10-09：加了「必须是英文原文，不许翻译」。原因是量出来的，不是猜的 ——
+    #   qwen2:7b 被要求交引用时，会【把英文材料忠实翻译成中文】再交上来：
+    #     材料原文：BERT is a pretrained bidirectional language model that is built
+    #               based on transformer architecture. Since one of the tasks of
+    #               BERT pretraining is next-sentence prediction …
+    #     模型交的：BERT是2018年提出的语言模型，基于变换器架构，…它以下一个句子
+    #               预测任务为目标…
+    #   内容句句对得上出处，但字符串在原文里【一个字都找不到】，verify 判它伪造。
+    #   那不是模型在撒谎，是【契约本身没法被执行】：answer 用中文写，
+    #   却要求它交一句英文原话 —— 没人告诉它这两件事可以并存。
+    #   模型有能力做到（正常流程里它就交过英文原句），只是一直没人说。→ 说清楚。
     parts.append(
-        "4. quotes 里填你【逐字照抄】的原文句子 —— 从上面材料里原样复制，"
+        "4. quotes 里填【材料原文里的英文原句】—— 从上面材料里逐字复制，"
         "一个字都不要改：标点、大小写、空格全部保持原样。"
-        "代码会拿它去原文里做精确比对，改一个字符就会被判定为伪造引用。"
-        "键是材料编号（写成字符串），值是你抄下来的那句话。"
+        "★ answer 用中文写，但 quotes 【必须是英文原文，不许翻译】。"
+        "翻译过来的句子不算引用：代码会拿它回原文里比对，"
+        "译文一个词都对不上，会被判定为伪造引用。"
+        "键是材料编号（写成字符串），值是你抄下来的那句英文原文。"
         "如果没有用到任何材料（拒答），quotes 写成空对象 {}。"
     )
     parts.append("")
@@ -175,8 +243,8 @@ def build_prompt(question: str, chunks: list[dict]) -> str:
     parts.append("## 输出格式")
     parts.append("只输出一个 JSON 对象，不要 markdown 代码块，不要任何解释文字：")
     parts.append(
-        '{"answer": "你的回答", "used": [1, 3], '
-        '"quotes": {"1": "从材料1原样抄来的那句话", "3": "从材料3原样抄来的那句话"}}'
+        '{"answer": "你的回答（中文）", "used": [1, 3], '
+        '"quotes": {"1": "材料1里的英文原句，逐字复制", "3": "材料3里的英文原句，逐字复制"}}'
     )
 
     return "\n".join(parts)

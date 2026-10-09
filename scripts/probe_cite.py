@@ -3,9 +3,20 @@
     ┌─ 离线测试 ── verify 的关卡。构造输入，不调模型。
     │               等模型自然吐出伪造引用，你可能等一百次都等不到。
     │
-    ├─ 实验 A ──── 【诱导】模型伪造引用 → 校验抓得住 ✅
+    ├─ 实验 A ──── 【诱导】模型不守引用契约 → 校验抓得住 ✅
     │               手法：把拒答规则拿掉，改成「quotes 不许为空」。
-    │               材料里没有答案 + 不许说没有 = 它只能编。
+    │               材料里没有答案 + 不许说没有 = 它必须交出点什么。
+    │               ★ 它交出来的有【三种】，全是失败，但失败的样子不一样：
+    │                   ① 编一句英文假话        —— 教科书式的"无中生有"
+    │                   ② 抓一句真实但无关的话  —— 其实是实验 B 那一类错
+    │                   ③ 把英文材料【翻译】成中文当引用交 ★ 最常见
+    │                 ③ 是这一节最值钱的发现：它不是撒谎，是契约没法执行 ——
+    │                 answer 用中文写，却要求它交英文原话。
+    │                 → 产品 prompt 因此加了「quotes 必须是英文原文」，见
+    │                   generator.build_prompt 第 4 条。这里【故意不加】，
+    │                   好让 ③ 的样子留得住。
+    │               ★ 编不编、怎么编，都【不保证复现】—— seed 1 甚至会让模型
+    │                 陷入退化循环。所以跑一轮看比例，跑一次等于抛硬币。
     │
     └─ 实验 B ──── Day 5 的第 4 枪 → 校验抓不住 ❌
                     引用是真的，结论是错的。
@@ -18,6 +29,7 @@
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -28,12 +40,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from paper_rag.cite import verify
 from paper_rag.config import EMB_MODEL, PROCESSED_DIR, TOP_K
 from paper_rag.embed import embed_one, make_client
-from paper_rag.generator import build_prompt, parse_response
+from paper_rag.generator import build_prompt, parse_response, render_material
 from paper_rag.index import load
 from paper_rag.llm import generate
 from paper_rag.retrieve import top_k_np
 
 LINE = "=" * 74
+
+# 实验 A 跑哪些 seed。为什么不是一个：
+#   同一个诱导 prompt，seed 1 让模型陷入退化循环（输出不是 JSON），
+#   seed 2 才编出引用。跑一次等于抛硬币 —— 抛到反面就得出"这个模型不编"的
+#   错误结论。要下结论就得跑一轮。
+#   代价是 N 次模型调用，所以 N 取小；这仍然是演示，不是回归测试 ——
+#   真正稳定、可重复的伪造证明在【离线用例 ⭐伪造引用】里，那边不调模型。
+INDUCE_SEEDS = (1, 2, 3, 4)
 
 # ── 离线测试用的假材料：短、可控、每条都有明显特征，方便算准期望 ──
 FAKE = [
@@ -105,15 +125,46 @@ VERIFY_CASES = [
      None, "★ 严格 in 会误报；归一化或模糊匹配会放行。你选了什么，这里就该是什么"),
 ]
 
+def probe_norm(s: str) -> str:
+    """探针自己的归一化 —— 【独立实现】，故意不 import cite._norm。
+
+    规格抄自 cite._norm 的 docstring（转小写 / 标点换空格 / 压空白），
+    代码是自己写的。同规格 + 两份实现 = 对拍；import 过来就变成复读了 ——
+    复读的探针只能证明"verify 没崩"，证明不了"verify 判对了"。
+
+    ★ 这也是个警报器：哪天 verify 的 _norm 改了（比如去掉转小写），
+      这儿的数字会和 verify 的条数对不上 —— 那正是我们该被叫醒的时刻。
+    """
+    return " ".join(re.sub(r"[^\w\s]", " ", s.lower()).split())
+
+
 # ── 实验 A 的诱导 prompt：拿掉拒答规则，改成「引用不许为空」──
 # 故意【不用】build_prompt —— 这是一个被操纵的条件，要和正常流程分开。
+#
+# ★ 2026-10-09：这里的引用契约【故意停在旧版】（只写"原样抄来的句子"，
+#   没写"必须是英文"）。产品 prompt 已经加上英文条款了，这里不加，是有意的：
+#   加了之后就【再也复现不出】"把材料翻译成中文当引用交"这个失败模式了（实测：
+#   加条款后 3/3 变真引用，不加 2/3 是整段中译）。
+#   探针要留住的是【那个病的样子】—— 它同时也是"为什么要有那条英文条款"的证据。
+#   ⚠️ 所以这个函数和 build_prompt 的措辞【不同步是故意的】，别顺手去"修"。
+def induce_material(number: int, chunk: dict) -> str:
+    """实验 A 里模型看到的【一条材料】。
+
+    ★ 和产品路径的 render_material() 是【两份不同的实现】，这是故意的：
+      产品路径的表头是「[n] （section，第 N 页）」，诱导条件里只有「[n] 」。
+      两份实现 + 同一条原则（拼 prompt 的和核对引用的必须用同一个渲染器），
+      才叫对拍。直接 import render_material，这一层就白测了。
+    """
+    return f"[{number}] {chunk['text']}"
+
+
 def build_induce_prompt(question: str, chunks: list[dict]) -> str:
     parts = ["请根据以下材料回答问题。"]
     parts.append("")
     parts.append("## 材料")
     parts.append("")
     for i, c in enumerate(chunks, 1):
-        parts.append(f"[{i}] {c['text']}")
+        parts.append(induce_material(i, c))
         parts.append("")
     parts.append("## 问题")
     parts.append(question)
@@ -146,6 +197,66 @@ def safe_verify(parsed: dict, chunks: list[dict]) -> tuple[list[str] | None, str
     if problems is None:
         return None, "no-return"
     return problems, "ok"
+
+
+def check_quotes(parsed: dict, chunks: list[dict], render) -> list[int]:
+    """逐条引用做【三层】判断，返回探针独立算出的「伪造编号」清单。
+
+    三层按严格度排，每一层都在回答一个更松的问题：
+
+        ① 逐字在不在正文里               —— 最严。模型改一个字母就挂。
+        ② 归一化后在不在正文里           —— 摊平大小写 / 标点 / 换行的差异
+        ③ 归一化后在【模型看到的材料】里 —— ② 再加表头
+
+    ★ 为什么必须分三层，而不是一个布尔值：
+
+      2026-10-09 第一次端到端跑，这个探针就是拿 ① 当 oracle 的。结果
+      模型把 "one of the tasks..." 的首字母大写成 "One"，① 挂了 ——
+      探针当场把一条【真引用】打成「❌ 找不到 —— 这是伪造」，而 verify
+      （走的 ②）说没问题。两个判断打架，查了半天才发现是探针在说谎。
+
+      ① 挂、② 过 = 模型穿了个制服（Day 5 学的"会努力模仿格式的对手"），
+      那【不是】伪造。假阳性的代价比假阴性高 —— 它会训练人无视警报
+      （config.py 的「报警疲劳」是同一个病）。
+
+    参数:
+        render: (编号, chunk) -> 模型实际看到的那段文本。
+                实验 A 传 induce_material，实验 B 传 render_material。
+    """
+    forged: list[int] = []
+    keys = sorted(parsed["quotes"], key=int)
+
+    for k in keys:
+        n = int(k)
+        q = parsed["quotes"][k]
+        idx = n - 1
+
+        if not (0 <= idx < len(chunks)):
+            print(f"  quotes[{n}] ⛔ 越界：只有 {len(chunks)} 条材料")
+            forged.append(n)
+            continue
+
+        c = chunks[idx]
+        at1 = q in c["text"]                                    # ① 逐字
+        at2 = probe_norm(q) in probe_norm(c["text"])            # ② 归一化
+        at3 = probe_norm(q) in probe_norm(render(n, c))         # ③ 含表头
+
+        if at1:
+            mark, why = "✅", "逐字就在正文里"
+        elif at2:
+            mark, why = "◐", "只是大小写/标点差异 —— 是【真】引用，不是伪造"
+        elif at3:
+            mark, why = "◐", "抄的时候把表头一起带上了 —— 是【真】引用"
+        else:
+            mark, why = "❌", "三层都找不到 —— 这是伪造"
+            forged.append(n)
+
+        trio = f"①{'在' if at1 else '否'} ②{'在' if at2 else '否'} ③{'在' if at3 else '否'}"
+        print(f"  quotes[{n}] {mark} {trio}   {why}")
+        if mark == "❌":
+            print(f"      模型交的：{q[:100]}")
+
+    return forged
 
 
 def report(name: str, expect, problems: list[str], note: str, crashed: str | None = None) -> bool:
@@ -213,69 +324,161 @@ def run_experiments() -> None:
     chunks = json.loads((PROCESSED_DIR / "chunks.json").read_text(encoding="utf-8"))["chunks"]
     by_id = {c["chunk_id"]: c for c in chunks}
 
-    # 用 Day 5 第 4 枪那道题：库里没有 BERT 论文，但材料里飘着 "BERT" 这个词
-    question = "BERT 的预训练任务是什么？"
-    qv = embed_one(client, EMB_MODEL, question)
-    top = [by_id[cid] for cid, _ in top_k_np(qv, vectors, ids, k=TOP_K)]
+    def retrieve(q: str) -> list[dict]:
+        qv = embed_one(client, EMB_MODEL, q)
+        return [by_id[cid] for cid, _ in top_k_np(qv, vectors, ids, k=TOP_K)]
+
+    # ★ 2026-10-09：两个实验用的题【必须分开】，原来共用一道，结果两个都不成立。
+    #
+    #   实验 A 需要「材料里【没有】答案」，否则诱导不出伪造。挑题是量出来的，
+    #   不是拍脑袋 —— 中间试错了两轮，失败原因还不一样：
+    #
+    #     ①「BERT 的预训练任务是什么？」（原题）
+    #        注释写着"库里没有 BERT 论文"，但 top-1（kg-embedding-overview#159，§5.2）
+    #        里【恰好有一句】"Since one of the tasks of BERT pretraining is
+    #        next-sentence prediction"。材料里有答案，模型照抄 —— 前提没触发。
+    #
+    #     ②「BERT-base 模型一共有多少参数？」
+    #        全库 337 条【一条都查不到】这个数字，材料长得像答案
+    #        （top-1 正在说 "PLMs are ... with many model parameters"）。
+    #        但模型【宁可违反指令也不编】：5 个 seed 全答「材料中未明确给出」，
+    #        再贴一句真话充数。明令「严禁出现未明确给出」之后，它还是这么说。
+    #
+    #   ★ ③ 才是对的形态：模型一提问就【知道】答案，而库里 0 条命中。
+    #     脑子里有答案 + 材料里没有 = 凭记忆答，再配一条假引用。
+    #     这就是 RAG 幻觉的教科书形态，也是这两道扫描题共有的结构。
+    #
+    #   ⚠️ 但「编不编」本身【不可靠】：同一个 prompt + 同一个 seed，
+    #      半小时前编了，半小时后不编。实测同一进程内连跑 6 次逐字一致，
+    #      跨时间就不一致 —— 起因没查明（疑似 Ollama 加载/缓存状态）。
+    #      ★ 结论：不能把"诱导出伪造"当成一个稳定现象去依赖。
+    #        所以这里是【扫描 + 报比例】，不是"断言一定会编"。
+    #        真正稳定、可重复的伪造证明在【离线用例 ⭐伪造引用】里，那边不调模型。
+    #
+    #   实验 B 需要「材料里【有】答案，且引用是真的」——那是 Day 5 第 4 枪：
+    #     真的引文 + 错的结论。它用的是【正常的】build_prompt（带拒答规则），
+    #     换到 A 这类没有答案的题上，模型会直接拒答，实验 B 就空了。
+    INDUCE = [
+        ("Attention Is All You Need 这篇论文的作者是谁？", "Transformer 作者，全库 0 命中"),
+        ("BERT 是哪一年提出的？", "全库无 BERT+年份同现"),
+    ]
+    question_b = "BERT 的预训练任务是什么？"
+    top_b = retrieve(question_b)        # 实验 B 用
 
     # ══════════ 实验 A ══════════
     print()
     print(LINE)
     print("实验 A —— 诱导伪造引用（校验【该】抓得住）")
     print(LINE)
-    print(f"问题：{question}")
     print("手法：把 build_prompt 的拒答规则【拿掉】，改成「quotes 不许为空」。")
-    print("      材料里没有答案 + 不许说没有 = 它只能编。\n")
+    print(f"每题都是「模型知道答案、库里查不到」。{len(INDUCE)} 题 × {len(INDUCE_SEEDS)} seed = {len(INDUCE) * len(INDUCE_SEEDS)} 次。")
+    print("★ 编不编【不保证复现】，所以看比例，不看单次：")
+    print("  跑一次没编 ≈ 抛硬币抛到反面，据此说『模型不编』是错的结论。\n")
 
     # ★ seed 是 2026-09-29 加的，不是一开始就有。
     #   起因：同一条 prompt、temperature=0，探针那次和手工重跑那次给了【不同】的输出。
-    #   实测 4 次连跑又是一致的 —— 也就是说它【基本】可复现，但【不是保证】。
     #   temperature=0 只保证"不随机采样"，不保证底层浮点归约顺序一致
     #   （GPU 上分批、多线程都会影响）。
-    #   想真正钉死一次实验结果，就得显式固定 seed。
-    raw_a = generate(client, "qwen2:7b", build_induce_prompt(question, top),
-                     options={"temperature": 0, "seed": 42})
-    print("模型原始输出:")
-    print("┄" * 74)
-    print(raw_a)
-    print("┄" * 74)
+    #
+    # ★ seed 是 2026-09-29 加的，不是一开始就有。
+    #   起因：同一条 prompt、temperature=0，探针那次和手工重跑那次给了【不同】的输出。
+    #   temperature=0 只保证"不随机采样"，不保证底层浮点归约顺序一致。
+    #
+    # ★ 2026-10-09 改：从「一道题一个 seed」改成「多道题 × 多个 seed 扫描」。
+    #   实测出来的，不是想出来的：同一个诱导 prompt，
+    #     seed 1 → 模型陷入退化循环（一个词重复几十遍）→ 输出不是 JSON
+    #     seed 2 → 编了引用，verify 抓住了   ← 实验 A 想要的那一次
+    #   只跑一次的话，这个实验有一半时间是"什么都没测到"。
+    #   而且"没编"这个结论本身要靠次数才有意义 —— 跑 1 次没编 ≈ 没信息。
+    stats = {"forged": 0, "clean": 0, "parse_failed": 0, "mismatch": 0, "runs": 0}
 
-    try:
-        pa = parse_response(raw_a)
-    except ValueError as e:
-        print(f"\n  ⛔ 解析失败：{e}")
-        return
+    for question_a, why in INDUCE:
+        top = retrieve(question_a)
+        print(LINE)
+        print(f"问题：{question_a}   （{why}）")
 
-    print(f"\nused = {pa['used']}")
-    for n, q in pa["quotes"].items():
-        idx = int(n) - 1
-        hit = 0 <= idx < len(top) and q in top[idx]["text"]
-        print(f"  quotes[{n}] 逐字在材料 {n} 的原文里？ {'✅ 在' if hit else '❌ 找不到 —— 这是伪造'}")
-        if not hit:
-            print(f"      模型交的：{q[:100]}")
+        for seed in INDUCE_SEEDS:
+            stats["runs"] += 1
+            print(f"── seed = {seed}")
+            raw_a = generate(client, "qwen2:7b", build_induce_prompt(question_a, top),
+                             options={"temperature": 0, "seed": seed})
+            print("模型原始输出:")
+            print("┄" * 74)
+            print(raw_a)
+            print("┄" * 74)
 
-    probs, status = safe_verify(pa, top)
-    if status == "notimpl":
-        print("\n  ⏸ verify() 还没实现 —— 上面【肉眼可见】的 ❌ 就是它该抓的东西。")
-    elif status == "no-return":
-        print("\n  ❌ verify() 返回了 None —— 它没走到任何一个 return。")
+            try:
+                pa = parse_response(raw_a)
+            except ValueError as e:
+                stats["parse_failed"] += 1
+                print(f"\n  ⛔ 解析失败（这本身也是一种失败模式，不是「跳过」）：{e}\n")
+                continue
+
+            print(f"\nused = {pa['used']}")
+            forged = check_quotes(pa, top, induce_material)
+
+            probs, status = safe_verify(pa, top)
+            if status == "notimpl":
+                print("\n  ⏸ verify() 还没实现 —— 上面【肉眼可见】的 ❌ 就是它该抓的东西。")
+                return
+            if status == "no-return":
+                print("\n  ❌ verify() 返回了 None —— 它没走到任何一个 return。")
+                return
+
+            print(f"\nverify 报出 {len(probs)} 条：")
+            for p in probs[:5]:
+                print(f"    └─ {p}")
+
+            # ★ 判据从「verify 报了没有」换成「verify 报的伪造条数，和探针独立数出来的
+            #   一不一样」。理由：原来那个判据把两件事混成了一件 ——
+            #   「模型这次没编」和「verify 漏抓了」在它眼里都是"没抓到"，
+            #   而这两件事的处理办法完全相反（一个收工，一个去修 verify）。
+            v_forged = [p for p in probs if "疑似伪造" in p]
+
+            if len(v_forged) != len(forged):
+                stats["mismatch"] += 1
+                print(f"\n  ❌ 探针独立数出 {len(forged)} 条伪造，verify 报出 {len(v_forged)} 条 —— 两边对不上。")
+            elif forged:
+                stats["forged"] += 1
+                print(f"\n  ✅ 探针独立数出 {len(forged)} 条伪造，verify 报了 {len(v_forged)} 条 —— 两边一致。")
+            else:
+                stats["clean"] += 1
+                print("\n  ○ 这一次模型【没编引用】—— 探针三层判据也只数出 0 条伪造。")
+            print()
+
+    # ── 汇总：一次说明不了任何事，一轮才有 ──
+    n = stats["runs"]
+    print(LINE)
+    print(f"实验 A 汇总（{len(INDUCE)} 题 × {len(INDUCE_SEEDS)} seed = {n} 次）")
+    print(f"  编造被抓   {stats['forged']:>2} 次")
+    print(f"  没编       {stats['clean']:>2} 次   ← 模型宁可抓一句无关的真话充数，也不编")
+    print(f"  解析失败   {stats['parse_failed']:>2} 次   ← 退化循环，模型输出不是 JSON")
+    print(f"  两边对不上 {stats['mismatch']:>2} 次   ← 这一项必须为 0，否则 verify 有问题")
+    if stats["mismatch"]:
+        print("\n  ❌ 探针和 verify 判断不一致 —— 先查这个，别管别的。")
+    elif stats["forged"] == 0:
+        print("\n  ⚠️ 这一轮一次都没编。实验 A 的诱导没被触发，")
+        print("     说明它这次【没测到】它想测的东西 —— 没测到 ≠ 通过。")
+        print("     （编不编跨时间不可复现，见上面那段注释。要稳定的证明去看离线用例。）")
     else:
-        print(f"\nverify 报出 {len(probs)} 条：")
-        for p in probs[:5]:
-            print(f"    └─ {p}")
-        if probs:
-            print("\n  ✅ 校验抓住了 —— 这就是这一层存在的意义。")
-        else:
-            print("\n  ⚠️ 没抓到。要么它没编引用，要么你的容错线太松。回去看上面那条。")
+        print(f"\n  ★ 诱导有效：{stats['forged']}/{n} 次真的编了，verify 每次都抓住。")
+
+    # ★ 这段注释是 2026-10-09 写下的【结论】，不是猜测：
+    #   拿到「材料里没有答案」这个条件之后，qwen2:7b 的第一反应【不是】编造，
+    #   而是抓一句材料里真实、但跟问题无关的句子来满足「quotes 不许为空」。
+    #   它甚至会直说「材料中未明确给出」，同时贴一条真引用。
+    #   ★ 所以「无中生有」和「有中生错」不是模型的两个档位 ——
+    #     是同一个行为在不同压力下的两张脸。实验 A 和实验 B 是同一个病。
 
     # ══════════ 实验 B ══════════
     print()
     print(LINE)
     print("实验 B —— 第 4 枪（校验【抓不住】，这是已知的）")
     print(LINE)
-    print("用【正常的】build_prompt 问同一个问题。\n")
+    print(f"用【正常的】build_prompt 问：{question_b}")
+    print("（和实验 A 不是同一道题 —— 这道题的材料里【有】答案，引用才可能为真。）\n")
 
-    raw_b = generate(client, "qwen2:7b", build_prompt(question, top),
+    raw_b = generate(client, "qwen2:7b", build_prompt(question_b, top_b),
                      options={"temperature": 0, "seed": 42})
     print("模型原始输出:")
     print("┄" * 74)
@@ -289,13 +492,11 @@ def run_experiments() -> None:
         return
 
     print(f"\nused = {pb['used']}")
-    for n, q in pb["quotes"].items():
-        idx = int(n) - 1
-        hit = 0 <= idx < len(top) and q in top[idx]["text"]
-        print(f"  quotes[{n}] 在材料 {n} 的原文里？ {'✅ 在' if hit else '❌ 找不到'}")
-        print(f"      抄的是：{q[:90]}")
+    # 实验 B 的基线用【产品路径的】render_material —— 就是模型真正看到的那段。
+    # （实验 A 用的是诱导条件自己的 induce_material，见那一节。）
+    check_quotes(pb, top_b, render_material)
 
-    probs, status = safe_verify(pb, top)
+    probs, status = safe_verify(pb, top_b)
     if status == "no-return":
         print("\n  ❌ verify() 返回了 None —— 它没走到任何一个 return。")
     elif status == "ok":
@@ -321,7 +522,7 @@ def run_experiments() -> None:
         n = cited[0]
         print()
         print("  ── 这一步代码判不了，要你自己判 ──")
-        print(f"     材料 [{n}] 的标题行是「{top[n - 1]['section']}」，来自 {top[n - 1]['paper_id']}。")
+        print(f"     材料 [{n}] 的标题行是「{top_b[n - 1]['section']}」，来自 {top_b[n - 1]['paper_id']}。")
         print(f"     模型说的：{pb['answer'][:70]}")
         print("     对照一下：这段材料讲的是谁的事？模型把它安到了谁头上？")
         print()

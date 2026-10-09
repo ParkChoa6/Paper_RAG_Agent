@@ -38,6 +38,20 @@
 import logging
 import re
 
+# ★ 2026-10-09：这一行 import 是【故意的】，不是随手加的。
+#
+#   直觉上，校验层 import 生成层是个坏味道 —— 校验应该独立于被校验的东西。
+#   但这里反过来：verify 要回答的问题是「这句话是不是从【模型看到的材料】里抄的」，
+#   所以它【必须】知道模型看到的是什么。而"模型看到的材料长什么样"这件事，
+#   只有 render_material() 知道。
+#
+#   不 import 会怎样：自己在这儿再拼一遍。两份拼法迟早漂移，
+#   而漂移的表现是「真引用被报成伪造」—— 一个没人会往 import 上查的 bug。
+#   2026-10-09 第一次端到端跑，撞的就是这个 bug 的前身。
+#
+#   校验层和生成层在这里是【一对】，不是两层。build_prompt 里也写着同一句话。
+from paper_rag.generator import render_material
+
 logger = logging.getLogger(__name__)
 
 
@@ -249,7 +263,7 @@ def verify(parsed: dict, chunks: list[dict]) -> list[str]:
         if n < 1 or n > n_chunks:
             continue
 
-        chunk_text = chunks[n - 1].get("text", "")
+        chunk_text = render_material(n, chunks[n - 1])
         # ★ 2026-10-06：原来这里是 quotes.get(str(n), "") —— 换掉。
         #   n 一定在 quoted_set 里，而 quoted_set 就是 quotes_by_n 的键集，
         #   所以这里【必然取得到】，给默认值又是在留后门。（同上，"补一个值就是在编"）
@@ -261,7 +275,19 @@ def verify(parsed: dict, chunks: list[dict]) -> list[str]:
             problems.append(f"引用 [{n}]：提供的原文为空")
             continue
 
-        # 归一化后做子串匹配
+        # 归一化后做子串匹配。
+        #
+        # ★ 2026-10-09：比对的【基线换了】。
+        #   原来是 chunks[n-1]["text"]（只有正文），现在是 render_material()
+        #   （表头 + 正文，也就是模型实际看到的东西）。
+        #
+        #   为什么换：模型把表头 "[1] " 一起抄进 quotes 时，正文里当然找不到，
+        #   一条真引用被报成伪造。实测第一次端到端跑就撞上。
+        #
+        #   为什么不是"把 quotes 开头的 [n] 剥掉"：
+        #   那是补偿我们自己制造的偏差；表头一改（比如加论文标题），
+        #   剥离函数就静默失效。换成"和模型看到的一致"之后，
+        #   表头怎么改都自动跟上 —— 因为两边调的是同一个 render_material。
         norm_chunk = _norm(chunk_text)
         norm_quote = _norm(quote_text)
 
