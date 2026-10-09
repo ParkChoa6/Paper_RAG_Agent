@@ -26,6 +26,11 @@
 
 用法:
     .venv/Scripts/python.exe scripts/probe_cite.py
+
+退出码（★ 2026-10-10 补 —— 原来无论测出什么都 exit 0）:
+    0  全部通过，且实验 A 真的诱导出了伪造
+    1  有断言挂了：离线关卡没过 / 探针和 verify 两边对不上 / 半路中止
+    2  断言都过了，但实验 A 一次都没诱导成功 —— 【没测到 ≠ 通过】
 """
 
 import json
@@ -46,6 +51,23 @@ from paper_rag.llm import generate
 from paper_rag.retrieve import top_k_np
 
 LINE = "=" * 74
+
+# ── ★ 退出码：探针【必须】能失败 ──
+#
+# 2026-10-10 实测：把论文标题加进材料表头，离线关卡从 9/9 掉到 3/9 ——
+# 脚本照样 exit 0。当时是靠肉眼"怎么只剩 3 个 ✅"才抓住的。
+# 一个报得出问题、退出码却说"我很好"的探针，谁接走都是个静默的绿灯。
+# （这个仓库现在【没有】CI —— 但这不影响对错：人跑 `probe && 下一步`
+#   是同一种被骗，只是被骗的是人不是流水线。）
+#
+# ★ 失败分两种，【不能合成一个 1】—— 那是在报假警，而假警报会训练人
+#   无视警报（config.py 的「报警疲劳」，check_quotes 里的假阳性，
+#   是同一个病的两张脸）。所以分成三个码：
+EXIT_OK = 0        # 该测的都测了，且都过了
+EXIT_FAIL = 1      # 有断言挂了 —— 产品的问题
+EXIT_UNTESTED = 2  # 断言都过，但实验 A 没诱导出伪造 —— 这一枪【空了】
+                   #   产品是绿的，可这一轮什么都没测到。算成 0 就是在
+                   #   替它说"这一层没问题"，而它并没有说过这话。
 
 # 实验 A 跑哪些 seed。为什么不是一个：
 #   同一个诱导 prompt，seed 1 让模型陷入退化循环（输出不是 JSON），
@@ -293,7 +315,13 @@ def report(name: str, expect, problems: list[str], note: str, crashed: str | Non
     return good
 
 
-def run_offline() -> None:
+def run_offline() -> bool:
+    """跑离线关卡，返回【是否全部通过】。
+
+    ★ 返回值是 2026-10-10 加的。原来它把 scored/total 打印出来就完了 ——
+      调用方拿不到结果，于是 9/9 和 3/9 在退出码上长得一模一样。
+      教训一句话：打印不是返回值。人看得见，程序看不见。
+    """
     print(LINE)
     # 原来这里写的是"第 1~6 关"，而用例早就加到 8 条了 ——
     # 写死的编号就是会过期。去掉编号，让它没法过时。
@@ -307,7 +335,7 @@ def run_offline() -> None:
             problems = verify(parsed, FAKE)
         except NotImplementedError as e:
             print(f"\n  ⛔ verify() 还没实现：\n     {e}\n")
-            return
+            return False        # 「还没实现」尤其不能算通过 —— 它连测都没测
         except Exception as e:  # noqa: BLE001 —— 探针要看它炸成什么样
             crashed, problems = f"[{type(e).__name__}] {e}", []
 
@@ -329,6 +357,7 @@ def run_offline() -> None:
             scored += report(name, expect, problems, note, crashed)
     print()
     print(f"  {scored}/{total} 通过（观察项不计分）")
+    return scored == total
 
 
 def run_experiments() -> None:
@@ -403,7 +432,10 @@ def run_experiments() -> None:
     #     seed 2 → 编了引用，verify 抓住了   ← 实验 A 想要的那一次
     #   只跑一次的话，这个实验有一半时间是"什么都没测到"。
     #   而且"没编"这个结论本身要靠次数才有意义 —— 跑 1 次没编 ≈ 没信息。
-    stats = {"forged": 0, "clean": 0, "parse_failed": 0, "mismatch": 0, "runs": 0}
+    # aborted = 半路中止的原因（None = 跑完了）。见文件头 EXIT_FAIL 那段 ——
+    # 中止和"跑完但结果不好"是两回事，所以这里单独记原因，不混进计数里。
+    stats = {"forged": 0, "clean": 0, "parse_failed": 0, "mismatch": 0, "runs": 0,
+             "aborted": None}
 
     for question_a, why in INDUCE:
         top = retrieve(question_a)
@@ -433,10 +465,12 @@ def run_experiments() -> None:
             probs, status = safe_verify(pa, top)
             if status == "notimpl":
                 print("\n  ⏸ verify() 还没实现 —— 上面【肉眼可见】的 ❌ 就是它该抓的东西。")
-                return
+                stats["aborted"] = "verify() 还没实现"
+                return stats
             if status == "no-return":
                 print("\n  ❌ verify() 返回了 None —— 它没走到任何一个 return。")
-                return
+                stats["aborted"] = "verify() 返回了 None（一个 return 都没走到）"
+                return stats
 
             print(f"\nverify 报出 {len(probs)} 条：")
             for p in probs[:5]:
@@ -501,8 +535,11 @@ def run_experiments() -> None:
     try:
         pb = parse_response(raw_b)
     except ValueError as e:
+        # ★ 解析失败【不是跳过】—— 这是本文件自己在实验 A 里写死的一句话。
+        #   同理：模型没交出 JSON，实验 B 这一枪就没打出去，不能算跑完了。
         print(f"\n  ⛔ 解析失败：{e}")
-        return
+        stats["aborted"] = "实验 B 的模型输出不是合法 JSON"
+        return stats
 
     print(f"\nused = {pb['used']}")
     # 实验 B 的基线用【产品路径的】render_material —— 就是模型真正看到的那段。
@@ -543,14 +580,48 @@ def run_experiments() -> None:
         print("       那是在写一个笨拙的 BERT。这一层的边界到此为止。")
         print("       剩下两条路：让检索把【对的】材料捞上来，或者换更强的模型。")
 
+    return stats
+
 
 def main() -> None:
-    run_offline()
-    run_experiments()
+    offline_ok = run_offline()
+    stats = run_experiments()
     print()
     print(LINE)
     print("结论：这一层查得出【无中生有】，查不出【有中生错】。")
     print(LINE)
+
+    # ── 把上面两半的结论汇总成退出码。三个码的含义见文件头 EXIT_* 那段。──
+    #
+    # ★ 这里只做【汇总】，不做判断 —— 判断在哪一步发生，就在哪一步记录，
+    #   否则"哪里坏了"会在传递过程中丢掉，最后只剩一句"探针失败了"。
+    reasons = []
+    if not offline_ok:
+        reasons.append("离线关卡没过")
+    if stats["aborted"]:
+        reasons.append(f"半路中止：{stats['aborted']}")
+    if stats["mismatch"]:
+        reasons.append(f"探针独立数出的伪造条数和 verify 对不上（{stats['mismatch']} 次）")
+
+    print()
+    if reasons:
+        print("❌ 探针失败：")
+        for r in reasons:
+            print(f"     · {r}")
+        print(f"   退出码 = {EXIT_FAIL}")
+        sys.exit(EXIT_FAIL)
+
+    if stats["forged"] == 0:
+        # ★ 断言都过了，但实验 A 这一枪是空的。算成 0 就是在替它说
+        #   "这一层没问题"—— 而这一轮它【什么都没测到】。
+        print(f"⚠️ 断言全过，但实验 A 一次都没诱导出伪造（没编 {stats['clean']}/{stats['runs']} 次）。")
+        print("   没测到 ≠ 通过：这只说明这一轮模型没编，不说明 verify 挡得住什么。")
+        print(f"   退出码 = {EXIT_UNTESTED}")
+        sys.exit(EXIT_UNTESTED)
+
+    print(f"✅ 通过，且诱导有效（{stats['forged']}/{stats['runs']} 次编了，verify 每次抓住）。")
+    print(f"   退出码 = {EXIT_OK}")
+    sys.exit(EXIT_OK)
 
 
 if __name__ == "__main__":

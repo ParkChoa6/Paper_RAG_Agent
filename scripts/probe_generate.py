@@ -113,7 +113,7 @@ PARSE_CASES = [
 ]
 
 
-def main() -> None:
+def main() -> int:
     client = make_client()
     vectors, ids = load(model=EMB_MODEL)
 
@@ -161,11 +161,20 @@ def main() -> None:
         print("┄" * 74)
         print(f"解析出来的 used = {out['used']}\n")
 
-    run_parse_gates()
+    # 四道题是【演示】（要人眼看），关卡是【断言】（能自己判对错）。
+    # 所以退出码只由关卡决定 —— 见 run_parse_gates 的 docstring。
+    return 0 if run_parse_gates() else 1
 
 
-def run_parse_gates() -> None:
-    """第 5~8 关：parse_response 拦不拦得住。离线，不调模型。"""
+def run_parse_gates() -> bool:
+    """第 5~8 关：parse_response 拦不拦得住。离线，不调模型。
+
+    ★ 返回值是 2026-10-10 加的。原来它把 passed/len 打印出来就完了 ——
+      和 probe_cite.run_offline 是【一模一样的病】：打印不是返回值，
+      于是 18/18 和 11/18 在退出码上长得一模一样（都是 0）。
+      查这个病的时候顺手搜了一遍 scripts/，计分的只有这两个，
+      所以只修这两处。哪天再添一个"会判对错"的探针，记得给它也留个出口。
+    """
     print()
     print(LINE)
     print("第 5~8 关 · parse_response —— 包装能剥，内容不能编")
@@ -208,7 +217,8 @@ def run_parse_gates() -> None:
     print(LINE)
     print("验收：能答 / 拒答 / 格式 —— 三条都验完了。")
     print(LINE)
+    return passed == len(PARSE_CASES)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
