@@ -134,6 +134,42 @@ STRUCTURAL_HEADINGS = frozenset(
 #   遇到 Appendix 之类还能继续正常收录。
 REFERENCE_HEADINGS = frozenset({"references", "reference", "bibliography"})
 
+# ---- 拒答 ----
+# ★ 2026-10-09：这个字符串以前【只写在 generator 的 prompt 里】，代码里没有它。
+#   后果是：调用方没法判断「模型是真拒答了」还是「解析失败被伪装成拒答」——
+#   两者都长成 used=[] 的样子。generator 的注释里警告过这个坑（见 parse_response），
+#   但没给它一个可比较的值，警告就落不了地。
+#   提到这里之后，prompt 和判断逻辑引用的是同一个值，改一处就够。
+REFUSAL_TEXT: str = "资料未提及"
+
+# ---- 查询扩展（query expansion）----
+# 实测（2026-10-09，337 条语料）：
+#     「知识图谱嵌入模型是按什么标准分类的？」  → 正确段落排第 33 名
+#     「KGE 模型是按什么标准分类的？」          → 排第 1 名
+#   同一件事，只换了一个词。原因是【词表不匹配】：问题用全称，语料通篇是缩写。
+#   注意这既不是模型的锅也不是题目的锅 —— 同一个模型能把「双曲空间」
+#   对上 "hyperbolic space"（能跨语言），却对不上「知识图谱嵌入」↔ "KGE"
+#   （不能跨缩写）。
+#
+# 这张表是【手写】的，这就是选「查询扩展」而不是「改索引」的代价：
+#   换一批论文就得重写一遍。
+#   V3（把标题拼进被向量化的文本）不需要这张表，代价是要重建索引 + 重测拒答阈值。
+#   两条路哪个对，等入口跑通之后用评测集 A/B，别在这儿争。
+EXPAND_ENABLED: bool = True
+
+# 中文全称 → 语料里实际用的英文写法。
+# 值里【同时放缩写和全称】：语料两种写法都有，多给一个多一分命中机会。
+EXPANSIONS: dict[str, str] = {
+    "知识图谱嵌入": "KGE knowledge graph embedding",
+    "知识图谱推理": "KGR knowledge graph reasoning",
+    "链接预测": "link prediction",
+    "负采样": "negative sampling",
+    "知识图谱": "knowledge graph KG",
+    "多模态": "multi-modal",
+    "时序": "temporal",
+    "静态": "static",
+}
+
 # ---- 切分 ----
 # 清洗后短于它的块直接丢弃。拦的是「图里的文字」和「公式碎片」：
 #   'q(x)'  'd(z)'  'Query Encoder'  'Barack Obama was born in Hawaii.(x)'
