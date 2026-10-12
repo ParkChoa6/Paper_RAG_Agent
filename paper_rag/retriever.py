@@ -59,13 +59,14 @@ from typing import Protocol
 
 import numpy as np
 
+from paper_rag.bm25 import B, K1, BM25
 from paper_rag.config import TOP_K
 from paper_rag.embed import embed_one, embed_texts
 from paper_rag.retrieve import top_k_np
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Retriever", "DenseRetriever", "prefix_for"]
+__all__ = ["Retriever", "DenseRetriever", "BM25Retriever", "prefix_for"]
 
 
 # ────────────────────────────────────────────────────────────────
@@ -283,3 +284,92 @@ class DenseRetriever:
 
         # ③ 契约和 retrieve.top_k / top_k_faiss 逐位一致
         return top_k_np(qvec, self.vectors, self.ids, k=k)
+
+
+# ────────────────────────────────────────────────────────────────
+# 实现二：BM25 字面检索
+# ────────────────────────────────────────────────────────────────
+
+
+class BM25Retriever:
+    """BM25 字面检索 —— 词真的出现才算命中。
+
+    ── 这个类证明了 S5-1 那个接口决定是对的 ──
+
+        往下看，这个类里【没有 embed_one、没有向量、没有 numpy】。
+        它拿到 query 之后做的事是：分词 → 查倒排表 → 加分数。
+
+        如果 Retriever 接口当初收的是 `query_vec: list[float]`，
+        这个类根本写不出来 —— 它没有向量可收。
+
+        ★ 一个接口设计对不对，不是看第一个实现写起来顺不顺，
+          是看【最不像的那个实现】能不能进来。
+
+    ── 它的输入和 dense 一样是 chunk["text"] ──
+
+        刻意保持一致，这样「dense vs bm25」的对比里只有【检索方式】一个变量。
+        哪天想让 BM25 也看标题，那是另一个实验（标题对 BM25 大概率有用，
+        因为标题里的术语密度高）—— 但要单独量，别混进这一组。
+    """
+
+    def __init__(
+        self,
+        texts: list[str],
+        ids: list[str],
+        *,
+        k1: float = K1,
+        b: float = B,
+    ) -> None:
+        """参数:
+        texts: 文档正文列表
+        ids:   对应的 chunk_id
+        k1:    tf 饱和参数（默认 1.5）
+        b:     长度归一化强度（默认 0.75）
+        """
+        self.index = BM25(texts, ids, k1=k1, b=b)
+
+    @property
+    def name(self) -> str:
+        """★ 把 k1 / b 写进名字里。
+
+        理由和 DenseRetriever 带 `:raw` / `:prefix` 一样：
+        将来调参做 A/B 时，两行在表格里必须能分开。
+        名字写成 `"bm25"` 的话，`k1=1.5` 和 `k1=2.0` 两组长得一模一样。
+        """
+        return f"bm25:k1={self.index.k1},b={self.index.b}"
+
+    @classmethod
+    def from_chunks(cls, chunks: list[dict], **kw) -> "BM25Retriever":
+        """从 chunk 列表建索引。【评测用，不需要客户端】
+
+        参数:
+            chunks: chunk 列表，每条至少要有 "chunk_id" 和 "text"
+            **kw:   透传给 __init__（k1 / b）
+
+        ★ 注意签名和 DenseRetriever.from_chunks 不同 —— 它不收 client。
+          BM25 不需要调模型，所以不需要客户端。
+          ★ 接口只约束 search()，不约束构造函数 ——
+            这正是 Protocol 而不是 ABC 的好处：构造函数可以各随各的。
+        """
+        return cls([c["text"] for c in chunks], [c["chunk_id"] for c in chunks], **kw)
+
+    def search(self, query: str, k: int = TOP_K) -> list[tuple[str, float]]:
+        """查倒排表，返回得分最高的 k 条。
+
+        参数:
+            query: 查询文本
+            k:     取前几名
+
+        返回:
+            [(chunk_id, 分数), ...]，分数是 BM25 分，【无上界】。
+
+        ⚠️ 返回长度可能 < k，也可能是空：
+            纯中文 query（一个 ASCII 词都没有）→ []
+            query 的词在语料里一个都没出现     → []
+
+          ★ 空结果不是 bug，是这个检索器的【诚实回答】：
+            "按字面我找不到任何东西。"
+            但调用方（评测）必须把它和「找到了但排得靠后」分开记 ——
+            混在一起的话，空结果会被当成"排名很靠前"。
+        """
+        return self.index.search(query, k)
