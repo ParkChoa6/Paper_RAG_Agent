@@ -16,7 +16,7 @@ Stage 3 的拒答和 Stage 4 的引用校验，在换语料之后一次都没跑
         ▼
     query 向量 (1024,)
         │
-        │  ③ retrieve.top_k_np()   和【全部 337 条】语料比一遍
+        │  ③ retriever.DenseRetriever.search()   和【全部 337 条】语料比一遍
         ▼
     [(chunk_id, 分数)] × 5
         │
@@ -50,7 +50,8 @@ Stage 3 的拒答和 Stage 4 的引用校验，在换语料之后一次都没跑
     ingest.py      PDF  → chunk           （离线，一次）
     embed.py       文本 → 向量
     index.py       向量 ⇄ 磁盘
-    retrieve.py    向量 → 前 k 条
+    retrieve.py    向量 → 前 k 条         （最底层的原语）
+    retriever.py   文本 → 前 k 条         （检索器的统一接口，包住 retrieve）
     generator.py   问题+材料 → 模型 → 结构化结果
     cite.py        结构化结果 → 引用问题清单
     pipeline.py    ↑ 以上全部串起来       ← 本文件，只做编排，不含新逻辑
@@ -65,9 +66,8 @@ from paper_rag.config import (
     REFUSAL_TEXT,
     TOP_K,
 )
-from paper_rag.embed import embed_one
 from paper_rag.generator import answer
-from paper_rag.retrieve import top_k_np
+from paper_rag.retriever import DenseRetriever
 
 __all__ = ["expand_query", "ask"]
 
@@ -221,8 +221,16 @@ def ask(
     # 用 emb_model 而不是 gen_model —— 这是两个完全不同的模型，
     # 一个把文本压成 1024 维向量，一个把 prompt 变成文字。混用不会报错，
     # 只会静默给出垃圾向量（维数可能都碰巧一样）。
-    query_vec = embed_one(client, emb_model, query)
-    hits = top_k_np(query_vec, vectors, ids, k=k)
+    #
+    # ★ 2026-10-12：原来这里是 embed_one + top_k_np 两行直调，
+    #   现在改走 retriever.DenseRetriever —— 为了和 scripts/eval_retrieve.py
+    #   走【同一份】检索实现。原来评测那边是手抄的一份循环，
+    #   两边改一处漏一处【不会有任何东西报错】。
+    #
+    #   顺带修掉一个潜伏的分歧：query 前缀原来只活在评测脚本里，
+    #   生产路径压根没有这个概念。今天两边数字一样，只因为 bge-m3
+    #   的前缀是空串；换成 qwen3-embedding 就会一边加一边不加。
+    hits = DenseRetriever(client, emb_model, vectors, ids).search(query, k=k)
 
     # ── ④ chunk_id → chunk 字典 ──
     # ★ 必须按 chunk_id 查，不能按行号。
