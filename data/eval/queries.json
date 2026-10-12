@@ -39,9 +39,33 @@
     "  A 组 基线   答案和问题有词面交集，做不对说明整个链路断了，先修管道再谈模型",
     "  B 组 语义   问题里没有任何一个能直接命中的英文词，必须靠跨语言语义",
     "  C 组 反锚定 【我预期会失败】的题，用来暴露我自己实现里的弱点",
-    "  D 组 辨析   和 A 组某题只差一个词，专门测「两篇相邻论文分不分得开」"
+    "  D 组 辨析   和 A 组某题只差一个词，专门测「两篇相邻论文分不分得开」",
+    "",
+    "── 2026-10-12 · S5-3 加题 12 → 28（语料 7 篇 / 1345 条）──",
+    "为什么要加（不是「想看 RRF 效果」，那个问题已经答了 —— 上限是 0）：",
+    "  1. 旧 12 题的 17 个 target 全落在原来那 2 篇上，新加的 5 篇【一道题都没覆盖】。",
+    "     也就是说 Stage 5 的验收条件「任何改动后都能定量说明是变好还是变坏」目前不成立。",
+    "  2. 旧 12 题几乎全是「概念解释题」（为什么 / 分成哪几类 / 优缺点），这类题天生偏袒 dense。",
+    "     新加的 E 组刻意做成【事实查找型】（答案是符号、清单、损失名），给 BM25 一个公平的机会。",
+    "",
+    "新五组的设计意图：",
+    "  E 组 事实可列举  6 题。答案是一串符号 / 一张清单，词面命中即可 —— 偏向 BM25。",
+    "  F 组 概念解释    4 题。必须靠跨语言语义 —— 偏向 dense。",
+    "  G 组 同节辨析    3 题。同一小节里【紧挨着】的三个任务定义（补全 / 融合 / 推理），",
+    "                    互相是最难的干扰。",
+    "  H 组 同篇辨析    1 题。和 F 组的『多跳推理』『因果推理』合起来是同一篇里的",
+    "                    【三兄弟】：三处平行的「分成哪两类」，句式一样，答案不同。",
+    "  I 组 补覆盖      2 题。加完之后发现 tkg-box-embedding 只有 1 个 target ——",
+    "                    一篇论文只被一道题代表太薄，补 2 道。",
+    "",
+    "★ 出题前先查了【目标的唯一性】（扫全语料找有没有第二处在讲同一件事）。这一查纠了三处：",
+    "    - kg-opportunities-challenges#29 也在陈述「补全的目标」→ 必须一起列进 targets",
+    "    - tkg-time-layering#227 中间把 recency 写成了 novelty → 内部自相矛盾，不能当 target",
+    "    - tkg-box-embedding#127 / #142 两节各写了一遍评测协议 → 必须一起列进 targets",
+    "  「有多处讲同一件事的，全部列进 targets」这条规矩不是形式 —— 它是查出来的。",
+    "",
+    "★ guess 全部在跑之前写死，跑完不许改。"
   ],
-
   "queries": [
     {
       "q": "RotatE 把关系建模成什么操作？",
@@ -145,6 +169,139 @@
       ],
       "why": "原文: 'KGE models are often categorized based on scoring functions and tools applied to model entity-relation interactions and representations. In this paper, we mainly discuss two major classes, namely 1) distance-based models, and 2) semantic matching models.' —— 分类依据（scoring functions / tools）+ 分出的两类，都在这一句。\n★ 这题和上面 A 组的『静态 KGR 按技术分成哪三类』是【一对兄弟题】：\n    句式和问法几乎一样，答案却是两篇不同论文的不同内容（三类 vs 两类）。\n  两篇是相邻主题、都在讲 knowledge graph，能不能分开，就看这一对。\n  如果两道题互相抢答（比如这题把 kg-reasoning#57 排上来），说明模型只认『分类』这个词，没认『嵌入』和『推理』的区别。",
       "guess": "1（并对 A 组那题构成干扰）"
+    },
+    {
+      "q": "FTMI 把多跳路径补全里的「状态」形式化成一个五元组，这五个元素是什么？",
+      "targets": [
+        "tkg-meta-learning#45"
+      ],
+      "why": "原文: 'The state can be formalized as a quintuple st = (et,es,r,eo,t). et refers to the entity associated with the current time node, es and eo are the starting entity and target entity respectively, and r represents relations at timestamp t.' —— 五元组 + 每个字母的含义，都在这一句。\n单 target：全语料里 'quintuple' 只出现在这一处（查过）。\n★ 这题是【事实查找型】：答案是一串符号，dense 未必比 BM25 强 —— 加这一组就是为了给 BM25 一个公平的机会。",
+      "guess": "1 或 2"
+    },
+    {
+      "q": "FTMI 的总体奖励（overall reward）由哪两部分组成？",
+      "targets": [
+        "tkg-meta-learning#57"
+      ],
+      "why": "原文: 'Overall Reward: The overall reward consists of basic reward and path reward, and the formula is defined as follows:' —— 一句说完。\n单 target：全语料里 'basic reward and path reward' 只出现在这一处。\n★ 干扰项：#50 讲了 Basic reward 的内容、#53 讲了 Path efficiency —— 但它们都【没说总体奖励由哪两部分组成】。那两块是同节里最近的干扰，但不是答案。",
+      "guess": "1"
+    },
+    {
+      "q": "USTKGE 的目标函数 L* 由哪两部分损失组成？",
+      "targets": [
+        "tkg-box-embedding#82"
+      ],
+      "why": "原文: 'L* is composed of the main loss Lmain of the regression tasks and the normalization loss Llc of the logical constraints.' —— 两部分 + 各自负责什么，都在这一句。\n单 target：全语料里 'normalization loss' 只出现在这一处。\n★ 这题和上面 FTMI 的『总体奖励由哪两部分组成』是【同一句式、不同论文】的一对：FTMI 和 USTKGE 都是 TKG 论文，都在讲『模型由几部分组成』，测的就是分不分得开。",
+      "guess": "1 或 2"
+    },
+    {
+      "q": "FTMI 的「动作空间」被定义成什么？",
+      "targets": [
+        "tkg-meta-learning#47"
+      ],
+      "why": "原文: 'Action space is defined as the set of connection relations and timestamps of entities et under state st in the temporal knowledge graph, that is, At = {(r, t)|st}' —— 定义句 + 集合写法都在这一句。\n单 target：'Action space is defined' 全语料只此一处。\n★ 干扰项：#45 定义了 State、#49/#50 讲 Reward —— 同属 3.3 节 POMDP 的四个要素（State / Observation / Action / Reward），互相是最近的干扰。",
+      "guess": "2~4（同节里 State / Reward 那几段都在抢）"
+    },
+    {
+      "q": "TiFuLa 计算关系模糊隶属度时整合了哪几个因素？",
+      "targets": [
+        "tkg-time-layering#8",
+        "tkg-time-layering#162",
+        "tkg-time-layering#168",
+        "tkg-time-layering#248"
+      ],
+      "why": "答案: frequency, duration, recency, stability（四个）。\n四处【都完整列了这四个】，所以四个都是 target：\n  #8   摘要 'computes fuzzy membership of relations via frequency, duration, recency, and stability'\n  #248 结论段 'features three key innovations. First, ... integrates frequency, duration, recency, and stability'\n  #168 消融 'all four fuzzy metrics (frequency, duration, recency, and stability)'\n  #162 实验分析 'integrating frequency, duration, recency, and stability lifts Hits@10 to 36.72'\n★ 有意【不列】#227：它中间那句写的是 'the frequency, duration, novelty, and stability'（novelty 不是 recency，疑似翻译/排版错），末尾又写回 recency。一个内部自相矛盾的 chunk 当 target，会让这题变成有歧义的题 —— 这违背『如果答错了要能确定是模型的问题，不是题目本身有歧义』。\n★ 4 个 target 意味着命中面很大：这题主要测『能不能找到这篇论文的这个点』，不测细粒度排名。",
+      "guess": "1（4 个 target，命中面大，预期不会挂）"
+    },
+    {
+      "q": "TiFuLa 把时序逻辑规则的结构定义成什么？",
+      "targets": [
+        "tkg-time-layering#70"
+      ],
+      "why": "原文: 'The structure of a temporal logic rule is defined as a Horn clause rule, which is a substructure of a first-order logic rule' —— 定义句就在这一句。\n单 target：'Horn clause' 全语料出现 2 处，但只有 #70 是【定义它的那一处】。#73 是【拿它做对比的那一处】（'Compared with traditional Horn clauses that only capture static logical implications without temporal awareness...'）—— #73 说了 Horn 子句的局限，没说规则结构被定义成什么，所以它是干扰项不是 target。",
+      "guess": "1~3（#73 是最近的干扰）"
+    },
+    {
+      "q": "FTMI 为什么用部分可观测马尔可夫决策过程（POMDP）来建模多跳路径补全？",
+      "targets": [
+        "tkg-meta-learning#43"
+      ],
+      "why": "原文: 'Partially observable Markov decision process (POMDP) is a key framework for modeling and decision-making in multi-hop path completing environment with inherent uncertainties and incomplete information. POMDP extends the standard Markov decision processes (MDP) by introducing partial observability elements, making them especially suitable for scenarios where agents must reason based on limited or indirect information' —— 理由（固有不确定性 + 信息不完整 + 只能靠有限/间接信息推理）都在这里。\n★ 不列 #14：它在 Introduction 里说 'FTMI introduces the reinforcement learning framework, models the multi-hop path completion process as a partially observable Markov decision process' —— 它说了【做了什么】，没说【为什么】。这题问的是为什么。",
+      "guess": "1 或 2"
+    },
+    {
+      "q": "这篇综述把多跳推理分成哪两类？",
+      "targets": [
+        "kg-reasoning-overview#77"
+      ],
+      "why": "原文: 'Multi-hop reasoning can be divided into path-based multi-hop reasoning and RL-based multi-hop reasoning.' —— 一句说完。\n单 target。\n★ 这题和下面两道『分成哪两类』是【三兄弟】：同一篇综述里三处平行的分类（机器推理 / 多跳推理 / 因果推理），句式一模一样，答案互不相同。能不能分开，就看这一组。",
+      "guess": "1 或 2"
+    },
+    {
+      "q": "这篇综述把因果推理分成哪两类？",
+      "targets": [
+        "kg-reasoning-overview#132"
+      ],
+      "why": "原文: 'Causal inference can be divided into embedded causal reasoning and multi-hop-based causal reasoning, similar to the classification method of triplet reasoning.' —— 一句说完。\n单 target。\n★ 原文自己写了 'similar to the classification method of triplet reasoning' —— 连论文都承认这两个分类长得像。所以这题【预期会和上一题（多跳推理分成哪两类）抢答】，这是设计好的，不是意外。",
+      "guess": "2~5（预期被『多跳推理分成哪两类』抢答 —— 这一组的重点就是看抢不抢）"
+    },
+    {
+      "q": "Triplet reasoning 指的是什么？",
+      "targets": [
+        "kg-reasoning-overview#32"
+      ],
+      "why": "原文: 'Triplet reasoning refers to using only the basic triplets for reasoning without relying on any external prior information. In other words, triplet reasoning utilizes only the semantic and structural knowledge in the knowledge graph.' —— 定义 + 换个说法重述，都在这一句。\n单 target：'Triplet reasoning refers to' 全语料只此一处。\n★ 题面里保留了英文 'Triplet reasoning' 没译成中文，这是【故意】的：真实用户问到论文里的专有名词时会直接打英文。这题同时测『中文句子 + 一个英文术语』这种混合 query。",
+      "guess": "1~3"
+    },
+    {
+      "q": "知识图谱补全（knowledge graph completion）的目标是什么？",
+      "targets": [
+        "kg-opportunities-challenges#29",
+        "kg-opportunities-challenges#123"
+      ],
+      "why": "两处【都】陈述了目标，所以两个都是 target：\n  #123 'Knowledge graph completion aims to expand existing knowledge graphs by adding new triplets using techniques for link prediction ... and entity prediction'\n  #29  'Knowledge graph completion aims to improve the quality of knowledge graphs by predicting additional relationships and entities.'\n★ 这是唯一性检查查出来的：我原本只打算列 #123，扫了一遍发现 #29 也在陈述同一个目标。只列一个就是不公平的。\n★ 干扰项：#127（知识融合）、#132（知识推理）就在【同一小节里紧挨着】。三个任务的定义连着排在一起，是最难的那种干扰。",
+      "guess": "1 或 2"
+    },
+    {
+      "q": "知识融合（knowledge fusion）的目标是什么？",
+      "targets": [
+        "kg-opportunities-challenges#127"
+      ],
+      "why": "原文: 'Knowledge fusion aims to combine and integrate knowledge from different data sources. It is often a necessary step for the generation of knowledge graphs. The primary method of knowledge fusion is entity alignment or ontology alignment' —— 目标 + 主要方法都在这一句。\n单 target：'Knowledge fusion aims' 全语料只此一处。\n★ 和上一题（补全）、下一题（推理）是同一节里的三个兄弟定义。",
+      "guess": "1 或 2"
+    },
+    {
+      "q": "知识推理的目标是什么？",
+      "targets": [
+        "kg-opportunities-challenges#132"
+      ],
+      "why": "原文: 'The goal of knowledge reasoning is to infer new knowledge, such as the implicit relations between two entities, based on existing data. For a given knowledge graph, wherein there are two unconnected entities h and t ... knowledge reasoning can find out the potential relation r between these entities and form a new triplet (h, r, t).' —— 目标 + 形式化例子都在这一句。\n单 target。\n★ 这题【预期会失败】：『知识推理』这个词太泛，而语料里 kg-reasoning-survey（整篇讲知识图谱推理）和 kg-reasoning-overview（整篇讲知识推理）都是强干扰 —— 那两篇里随便一段都像在回答。这正是我想量的东西。",
+      "guess": "2~5（预期被两篇『推理』综述抢答 —— 本组最可能挂的一题）"
+    },
+    {
+      "q": "这篇综述把面向知识图谱的机器推理分成哪两类？",
+      "targets": [
+        "kg-reasoning-overview#10"
+      ],
+      "why": "原文: 'Liu et al. [6] classified machine reasoning oriented toward knowledge graph into embedded reasoning and multi-hop reasoning. Embedded reasoning refers to learning low-dimensional vectors for each entity or relation ... Multi-hop reasoning primarily learns relevant missing rules from existing knowledge.' —— 两类 + 各自的定义都在这一句。\n单 target：'embedded reasoning and multi-hop reasoning' 全语料只此一处。\n★ 这是『分成哪两类』三兄弟里的第一道（在 Introduction），另两道在后面两节。\n★ 注意它和【现有题 12】（KGE 模型按什么标准分类，是另一篇论文）也构成干扰 —— 'embedded reasoning' 里的 embedding 和 KGE 的 embedding 是两回事。",
+      "guess": "2~5"
+    },
+    {
+      "q": "USTKGE 提出了哪两类逻辑约束？",
+      "targets": [
+        "tkg-box-embedding#73"
+      ],
+      "why": "原文: 'We identify two logical constraints for USTKGE, namely, the transitivity constraint and the spatiotemporal constraint.' —— 两类齐全，就在这一句。\n单 target：这一句是全篇【唯一】把两类一起点名的地方。\n★ 干扰项：#74 单独定义了 Transitivity Constraint、#78 单独定义了 Spatiotemporal Constraint —— 它们各自只讲一类，答不出「哪两类」。同一小节里还有一个 #115 说 'we proposed two kinds of logic constraints of USTKGE'，但它【没有点名是哪两类】，所以不算答案（它是最近的干扰）。",
+      "guess": "1 或 2（#115 是最近的干扰：它说了『两类』但没说『哪两类』）"
+    },
+    {
+      "q": "USTKGE 的实验用哪两个指标来评测结果？",
+      "targets": [
+        "tkg-box-embedding#127",
+        "tkg-box-embedding#142"
+      ],
+      "why": "两处都写了评测协议，所以两个都是 target：\n  #127 6.3 节 'Evaluation protocol: We chose the Hits@n and mean reciprocal ranking (MRR) to evaluate the experimental results.'\n  #142 6.4 节 'Evaluation protocol. We choose the Hits@n and mean reciprocal ranking (MRR) to evaluate the experimental results:'\n★ 两节各写了一遍同一句话 —— 只列一个是不公平的。\n★ 题面里有 USTKGE 这个专有名词，BM25 只要扩展出这个词就能命中，所以这题对两个检索器都友好。它主要测『能不能锁定这一篇』。",
+      "guess": "1 或 2"
     }
   ]
 }

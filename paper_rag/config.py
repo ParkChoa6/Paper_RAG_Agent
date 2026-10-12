@@ -159,6 +159,31 @@ EXPAND_ENABLED: bool = True
 
 # 中文全称 → 语料里实际用的英文写法。
 # 值里【同时放缩写和全称】：语料两种写法都有，多给一个多一分命中机会。
+#
+# ── 往这张表里加词，有一条判断标准（2026-10-12 · S5-3 加题时定的）──
+#
+# ★ 只加【在这份语料里有区分度】的词。判断方法：在语料里数一下它出现多少条 ——
+#   出现得越少越该加，出现得越多越不该加。
+#
+#   为什么：「状态」→ "state"、"损失" → "loss" 这种看着对，其实是【有害】的。
+#   它们本身就是高频英文词，IDF 很低，加进去等于往 query 里掺一个
+#   「几乎每条文档都匹配」的词 —— 会把一堆不相关的文档捞进候选池，
+#   而真正有区分度的那个词被稀释掉了。
+#
+#   所以：**加 quintuple，不加 state；加 hyperrectangle，不加 operator。**
+#   这跟「BM25 不需要停用词表（IDF 自己会压）」是同一件事的两面 ——
+#   在语料侧 IDF 帮你压掉常见词，在 query 侧你得自己别把常见词塞进去。
+#
+#   ⚠️⚠️ 但这是【倾向】，不是铁律 —— 2026-10-12 实测（见 S5-3 记录第 4.6 节）：
+#     稀释机制是真的：Q13 的 target 用 'quintuple' 单独搜时 BM25 排第 1，
+#     加上 multi-hop / completion / ftmi 之后掉到第 93 —— 两个"看着有用"的词
+#     把一个 rank 1 的答案推掉了 92 名。
+#     于是按 IDF 裁表（删掉锚点 df > 40 的 18 条）：
+#         Top-1 32% → 25%，recall@5 54% → 39%，【空结果 0 → 8】
+#     ★ 高频词条是【入口】，不只是噪音：裁掉它们，8 道题在 BM25 里
+#       连一条候选都没有 —— 从"排得靠后"直接变成"完全失明"。
+#     ★ 一句话：局部为真的机制，整体可以是负的。
+#       所以别看到上面这条判据就去裁表 —— 裁之前先按 4.6 的方法重量一遍。
 EXPANSIONS: dict[str, str] = {
     "知识图谱嵌入": "KGE knowledge graph embedding",
     "知识图谱推理": "KGR knowledge graph reasoning",
@@ -168,6 +193,36 @@ EXPANSIONS: dict[str, str] = {
     "多模态": "multi-modal",
     "时序": "temporal",
     "静态": "static",
+    # ── 2026-10-12 · S5-3 加题时补的：新 5 篇论文的术语 ──
+    # 下面每一条都是【先查了语料里的实际写法】才写的，不是猜的。
+    "时序知识图谱": "temporal knowledge graph TKG",
+    "知识图谱补全": "knowledge graph completion",
+    "多跳推理": "multi-hop reasoning",
+    "多跳": "multi-hop",
+    "补全": "completion",
+    "因果推理": "causal inference",
+    "元学习": "meta learning",
+    "少样本": "few-shot",
+    "时空": "spatiotemporal",
+    "不确定": "uncertain",
+    "模糊隶属度": "fuzzy membership",
+    "模糊": "fuzzy",
+    "超矩形": "hyperrectangle",
+    "五元组": "quintuple",
+    "动作空间": "action space",
+    "逻辑规则": "logic rule",
+    "逻辑约束": "logic constraint",
+    "目标函数": "objective function",
+    "奖励": "reward",
+    "评测指标": "evaluation metric MRR Hits@n",
+    # ★ 下面 4 条是 S5-3 跑测之前体检出来的【词表缺口】，不是拟合题目：
+    #   体检方法 = 把每道题的扩展结果拿去分词，看有没有仍然是【空】的。
+    #   空 = BM25 一个字都进不去 = 这题对 BM25 完全失明。
+    #   「知识图谱推理」在表里、而「知识推理」不在 —— 这是个纯粹的漏项。
+    "知识推理": "knowledge reasoning",
+    "指标": "evaluation metric MRR Hits@n",
+    "路径型": "path-based",
+    "规则型": "rule-based",
 }
 
 # ---- 切分 ----
