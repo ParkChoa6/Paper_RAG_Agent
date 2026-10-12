@@ -73,27 +73,53 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from paper_rag.config import EMB_MODEL, EVAL_DIR, PROCESSED_DIR, TOP_K
+from paper_rag.config import EMB_MODEL, EVAL_DIR, PROCESSED_DIR, RETRIEVE_POOL, TOP_K
 from paper_rag.embed import make_client
 from paper_rag.pipeline import expand_query
+from paper_rag.rerank import CrossEncoderReranker, RerankedRetriever
 from paper_rag.retriever import BM25Retriever, DenseRetriever, Retriever
 
 
-def make_retriever(kind: str, model: str | None, client, chunks: list[dict]) -> Retriever:
+def make_retriever(
+    kind: str,
+    model: str | None,
+    client,
+    chunks: list[dict],
+    *,
+    pool: int = RETRIEVE_POOL,
+    reranker=None,
+) -> Retriever:
     """按名字造一个检索器。
 
     ★ 注意 bm25 分支【不需要 model 也不需要 client】——
       这是 S5-1 定接口时的那个判断的兑现：
       最不像的那个实现，真的进来。
+
+    ★ 而 rerank 分支证明了【另一个】判断：RerankedRetriever 满足 Retriever，
+      所以它上面那三行（dense/bm25）【一行都没改】就多了一个成员。
+      evaluate() 更是完全不知道有这回事。
+
+    参数:
+        reranker: 已经建好的重排器。传进来复用 ——
+                  重排模型 2.3GB，每格重建一次要重下/重载。
+                  传 None 就自己建一个。
     """
     if kind == "dense":
         return DenseRetriever.from_chunks(client, model, chunks)
     if kind == "bm25":
         return BM25Retriever.from_chunks(chunks)
+    if kind == "rerank":
+        # ★ 粗排用 dense。为什么不是 bm25？——见模块开头「设计三」和 S5-3 的结论：
+        #   BM25 单独只有 32%/54%，当粗排会让候选池质量更差。
+        #   要试「bm25 粗排 + rerank」是另一个实验，得单独加一个 kind。
+        base = DenseRetriever.from_chunks(client, model, chunks)
+        if reranker is None:
+            reranker = CrossEncoderReranker.from_chunks(chunks)
+        return RerankedRetriever(base, reranker, pool=pool, k=TOP_K)
 
     raise SystemExit(
         f"还不认识这种检索器: {kind!r}\n"
-        f"目前有 dense / bm25。rrf / rerank 是 Stage 5 后面几步的事。"
+        f"目前有 dense / bm25 / rerank。rrf 在 S5-3 被实测否决，不做了。"
     )
 
 
@@ -124,6 +150,7 @@ def evaluate(
     ranks: list[int] = []
     hits_at_k = 0
     empty = 0
+    not_in_list = 0
 
     if detail:
         print(f"{'题':<4}{'排名':>7}  {'分数':>9}  问题")
@@ -154,6 +181,22 @@ def evaluate(
             # MRR 白送 1.0 分，而且【不报错】。
             # 这是个安静的错误，正好会偏袒「什么都不返回」的检索器。
             rank = all_k + 1
+            # ★★ 「找不到」其实是【两种】病，修法完全不同，所以要分开数：
+            #     空       —— 检索器一条都没返回（query 一个词都没匹配上）
+            #     未进候选 —— 返回了东西，但目标压根【不在它返回的列表里】
+            #
+            #   对 BM25：未进候选 = 目标段落和 query 零词面重叠（没进倒排表的池子）
+            #   对 rerank：未进候选 = 目标不在粗排捞的那 pool 条里
+            #              ★ 这一列就是 rerank 的【天花板】：
+            #                它没进候选，重排再神也捞不上来。
+            #   对 dense：几乎永远是 0（它排全语料，什么都"在列表里"）
+            #
+            #   三种情况的共同语义是同一句话：
+            #   【这个检索器压根没机会找到它】—— 和"排得靠后"是两回事。
+            if scored:
+                not_in_list += 1
+            else:
+                empty += 1
             if detail:
                 mark = "空" if not scored else "?"
                 print(f"{n:<4}{mark:>7}  {'—':>9}  {item['q']}")
@@ -178,6 +221,7 @@ def evaluate(
         "recall_at_k": hits_at_k / n_q,
         "k": k,
         "empty": empty,
+        "not_in_list": not_in_list,
         "ranks": ranks,
         "secs": dt,
     }
@@ -188,16 +232,20 @@ def main() -> None:
     ap.add_argument("models", nargs="*", default=None,
                     help="嵌入模型名，不传则用 config.EMB_MODEL（--kind bm25 时忽略）")
     ap.add_argument("--kind", default="dense",
-                    help="检索器种类，逗号分隔：dense,bm25")
+                    help="检索器种类，逗号分隔：dense,bm25,rerank")
     ap.add_argument("--k", type=int, default=TOP_K,
                     help=f"算 recall@k 用的 k（默认 config.TOP_K = {TOP_K}）")
     ap.add_argument("--expand", action="store_true",
                     help="先做查询扩展（★ 生产默认是开的，所以这个才更接近线上）")
+    ap.add_argument("--pool", default=str(RETRIEVE_POOL),
+                    help=f"rerank 粗排捞多少条。逗号分隔可做扫描。"
+                         f"（默认 config.RETRIEVE_POOL = {RETRIEVE_POOL}）")
     ap.add_argument("--detail", action="store_true", help="打印每题明细")
     args = ap.parse_args()
 
     kinds = [x.strip() for x in args.kind.split(",") if x.strip()]
     models = args.models or [EMB_MODEL]
+    pools = [int(x) for x in str(args.pool).split(",") if x.strip()]
 
     eval_set = json.loads((EVAL_DIR / "queries.json").read_text(encoding="utf-8"))
     queries = eval_set["queries"]
@@ -209,52 +257,94 @@ def main() -> None:
     client = make_client()
     results = []
 
+    # ★ 重排器【只建一个】，所有 pool 共用。
+    #   模型 2.3GB，建两个对象 = 内存里两份 + 加载两次。
+    #   （懒加载在 CrossEncoderReranker 里，所以建对象本身不贵；
+    #     真正贵的是 _ensure_model 那一下，第一次 rerank 才触发。）
+    reranker = None
+    if "rerank" in kinds:
+        reranker = CrossEncoderReranker.from_chunks(chunks)
+        print(f"重排器: {reranker.name}  ← 模型第一次用到时才加载（首次要下约 2.3GB）")
+
     # bm25 和嵌入模型无关，所以它在 (kind, model) 这个网格里只有一格。
-    jobs: list[tuple[str, str | None]] = []
+    # rerank 再乘一个 pool 维度 —— ★ pool 是【系统的一部分】，不是调参旋钮：
+    # 同一份权重、同一批题，pool=5 和 pool=20 是两个不同的系统。
+    jobs: list[tuple[str, str | None, int | None]] = []
     for kind in kinds:
         if kind == "bm25":
             if args.models:
                 print(f"（--kind bm25 忽略模型参数: {args.models}）")
-            jobs.append((kind, None))
+            jobs.append((kind, None, None))
+        elif kind == "rerank":
+            jobs.extend((kind, m, p) for m in models for p in pools)
         else:
-            jobs.extend((kind, m) for m in models)
+            jobs.extend((kind, m, None) for m in models)
 
-    for kind, m in jobs:
+    for kind, m, p in jobs:
         try:
             t0 = time.time()
-            rt = make_retriever(kind, m, client, chunks)
-            print(f"\n[{kind}{':' + m if m else ''}] 建索引 {time.time() - t0:.1f}s → {rt.name}")
+            rt = make_retriever(kind, m, client, chunks,
+                                pool=p if p is not None else RETRIEVE_POOL,
+                                reranker=reranker)
+            label = kind + (":" + m if m else "") + (f":pool{p}" if p is not None else "")
+            print(f"\n[{label}] 建索引 {time.time() - t0:.1f}s → {rt.name}")
             results.append(evaluate(
                 rt, queries, all_k=len(chunks), k=args.k,
                 expand=args.expand, detail=args.detail,
             ))
         except Exception as e:
-            print(f"\n[ERROR] {kind} {m}: {type(e).__name__}: {e}")
+            print(f"\n[ERROR] {kind} {m} pool={p}: {type(e).__name__}: {e}")
 
     if not results:
         return
 
     # ---- 对比表 ----
-    print(f"\n{'=' * 74}")
+    print(f"\n{'=' * 86}")
     print("对比")
-    print("=" * 74)
-    print(f"{'检索器':<36}{'Top-1':>8}{'MRR':>8}{'排名':>8}{f'recall@{args.k}':>11}{'空结果':>8}")
-    print("-" * 74)
+    print("=" * 86)
+    # ★ 名字列加宽了：重排器的名字长（`dense:...:raw > ce:...:cpu @pool20`），
+    #   截断会把两个不同 pool 的行截成一样 —— 那张表就是骗人的。
+    print(f"{'检索器':<42}{'Top-1':>7}{'MRR':>8}{'排名':>8}"
+          f"{f'recall@{args.k}':>11}{'空':>5}{'未进候选':>9}")
+    print("-" * 86)
     for r in results:
-        name = r["name"] if len(r["name"]) <= 34 else r["name"][:33] + "…"
+        name = r["name"] if len(r["name"]) <= 40 else r["name"][:39] + "…"
         print(
-            f"{name:<36}{r['top1'] * 100:>7.0f}%{r['mrr']:>8.3f}"
-            f"{r['avg_rank']:>8.1f}{r['recall_at_k'] * 100:>10.0f}%{r['empty']:>8}"
+            f"{name:<42}{r['top1'] * 100:>6.0f}%{r['mrr']:>8.3f}"
+            f"{r['avg_rank']:>8.1f}{r['recall_at_k'] * 100:>10.0f}%"
+            f"{r['empty']:>5}{r['not_in_list']:>9}"
         )
-    print("-" * 74)
+    print("-" * 86)
     print("Top-1    = 正确段落排第 1 的题数占比")
     print("MRR      = 平均倒数排名（越高越好）")
     print("排名     = 平均要翻几条才找到答案（越低越好）")
     print(f"recall@{args.k} = 正确段落在前 {args.k} 条里的题数占比")
-    print("空结果   = 【一条都没返回】的题数 —— 不是排得靠后，是完全失明")
+    print("空       = 【一条都没返回】的题数（query 一个词都没匹配上）")
+    print("未进候选 = 返回了东西，但目标【不在返回的列表里】的题数")
+    print("           ★ rerank 的天花板就是这一列：没进粗排候选池的，重排捞不上来")
     print()
-    print("⚠️ 这些数字只有在【语料和题都一样】时才能互相比较。")
-    print("   加过论文之后，老数字作废 —— 干扰项多了，排名本来就会动。")
+    print("⚠️⚠️ 「排名」这一列在【未进候选 > 0】时会被拉高，而且不是变差了：")
+    print("   每一道未进候选的题都按 all_k+1 =", len(chunks) + 1, "名计。")
+    print("   对 dense 这无所谓（它排全语料，未进候选几乎恒为 0），")
+    # ★ 这里原来写死的是一句「rerank@5 有 8 题未进候选」。
+    #   两个毛病：
+    #     ① 它是【硬编码的】，跑别的配置时就成了假话；
+    #     ② 更要命的是它和【正上方那张表】对不上 —— 表是本次真实结果，
+    #        尾巴是个常数。**表是活的、解释是死的**，看的人反而会信尾巴。
+    #   所以改成从 results 里取本次的真实数字。
+    #   ★ 和 S5-5 那条教训是同一个病：别写没量过的断言。
+    worst = max(results, key=lambda r: r["not_in_list"])
+    if worst["not_in_list"]:
+        print(f"   对 BM25 / rerank 就不一样了 —— 本次 {worst['name']} 有 "
+              f"{worst['not_in_list']} 题未进候选，")
+        print("   单这一项就把它那一列的均值抬高几百名，而它的 Top-1 可能是好的。")
+    else:
+        print("   对 BM25 / rerank 就不一样了 —— 本次没有未进候选的题，这一列暂时还算干净。")
+    print("   ★ 所以：看重排要看 Top-1 和 recall@k，【不要】拿它的「排名」去和 dense 比。")
+    print("     想干净地比排名，得只统计「找到了的那些题」—— 那是另一张表，本脚本没做。")
+    print()
+    print("⚠️ 这些数字只有在【语料、题、以及检索器的配置】都一样时才能互相比较。")
+    print("   加过论文之后老数字作废；改了 pool 之后也是 —— pool 是系统的一部分。")
 
 
 if __name__ == "__main__":

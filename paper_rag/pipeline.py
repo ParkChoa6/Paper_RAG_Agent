@@ -64,12 +64,82 @@ from paper_rag.config import (
     EXPAND_ENABLED,
     GEN_MODEL,
     REFUSAL_TEXT,
+    RERANK_ENABLED,
+    RETRIEVE_POOL,
     TOP_K,
 )
 from paper_rag.generator import answer
-from paper_rag.retriever import DenseRetriever
+from paper_rag.rerank import CrossEncoderReranker, RerankedRetriever
+from paper_rag.retriever import DenseRetriever, Retriever
 
-__all__ = ["expand_query", "ask"]
+__all__ = ["expand_query", "build_retriever", "ask"]
+
+
+def build_retriever(
+    client,
+    emb_model: str,
+    vectors,
+    ids: list[str],
+    chunks: list[dict],
+    *,
+    k: int = TOP_K,
+    pool: int = RETRIEVE_POOL,
+    enabled: bool = RERANK_ENABLED,
+) -> Retriever:
+    """建一个【生产用的】检索器：粗排捞宽 → （可选）重排 → 取前 k。
+
+    ── 为什么要把它放在产品里，而不是塞进 scripts/ask.py ──
+
+        因为「生产怎么组合检索」这件事，会有【不止一个】调用方：
+        scripts/ask.py 现在要，以后的 web 入口要，批量评测也要。
+
+        ★ 各写一份的后果，这个仓库已经吃过【两次】：
+            S5-1 —— query 前缀只活在评测脚本里，生产路径压根没这个概念
+            S5-2 —— 查询扩展开关在 eval_embed.py 里从来不存在，
+                    于是它历史上量的一直是"没扩展"的数字
+          两份实现改一处漏一处，而且【不会有任何东西报错】。
+
+        所以组合逻辑只有这一份，调用方各自决定的是【什么时候建】
+        （见下面的 ⚠️），不是【怎么建】。
+
+    ── ⚠️⚠️ 什么时候建：循环外，一次 ──
+
+        这个函数每调一次都新建一个对象。重排模型的【权重】有进程级缓存
+        （rerank._load_model），所以重复调用不会重复下载 2.3GB ——
+        但对象构造、id_to_text 的引用、以及那层包装仍然白做。
+
+        真正要防的是这个形状：
+
+            for q in questions:                 # ← 循环
+                ask(client, q, ...)             # ← ask 内部会调本函数
+
+        所以入口应该在循环【外】建好，然后传进 ask(retriever=...)。
+        见 scripts/ask.py。
+
+    参数:
+        client:    ollama 客户端
+        emb_model: 嵌入模型（必须和建索引时一致）
+        vectors:   索引向量 (N, D)
+        ids:       索引 id 列表 (N,)
+        chunks:    全量 chunk 列表（重排器要用它把 id 换回正文）
+        k:         最后取几条送进 prompt
+        pool:      粗排捞几条。★ 必须 > k，否则重排只能在 k 条里换顺序
+        enabled:   False 就只返回粗排（相当于回到 S5-3 的行为）
+
+    返回:
+        一个满足 Retriever 的东西 —— 名字和 search() 而已。
+        调用方【不需要知道】它背后是纯 dense 还是 dense+rerank。
+    """
+    base = DenseRetriever(client, emb_model, vectors, ids)
+    if not enabled:
+        return base
+
+    return RerankedRetriever(
+        base,
+        CrossEncoderReranker.from_chunks(chunks),
+        pool=pool,
+        k=k,
+    )
 
 
 def expand_query(question: str) -> str:
@@ -171,6 +241,7 @@ def ask(
     emb_model: str = EMB_MODEL,
     expand: bool = EXPAND_ENABLED,
     options: dict | None = None,
+    retriever: Retriever | None = None,
 ) -> dict:
     """完整走一遍：扩写 → 检索 → 生成 → 校验引用。
 
@@ -187,18 +258,32 @@ def ask(
         expand:    要不要做查询扩展（默认跟 config.EXPAND_ENABLED）
         options:   透传给 Ollama 的生成参数
                    （评测时传 {"temperature": 0} —— 要可复现）
+        retriever: 已经建好的检索器。★ 循环里调 ask 时【必须】传 ——
+                   不传的话每次都会新建一个（含重排器），白做一堆构造。
+                   见 build_retriever 的 ⚠️ 说明。
 
     返回:
         {
           "question":   str,    # 用户原话，一字不改
           "query":      str,    # 实际送去检索的文本
           "expanded":   bool,   # 扩展有没有真的生效
+          "retriever":  str,    # ★ 这次是【哪个检索器】捞的。
+                                #   以前没这一项，于是「换了检索器」和
+                                #   「没换」在输出里长得一模一样 ——
+                                #   和当年不打印论文标题是同一个病。
           "retrieved":  [{"chunk": {...}, "score": float}, ...],
           "parsed":     dict | None,   # 模型输出；解析失败时为 None
           "problems":   [str, ...],    # cite.verify 的问题清单，空 = 通过
           "status":     "answered" | "refused" | "suspect" | "parse_failed",
           "note":       str | None,    # suspect / parse_failed 时的解释
         }
+
+    ⚠️⚠️ retrieved[].score 的【含义取决于检索器】：
+        纯 dense        → 余弦相似度，∈ [−1, 1]
+        dense + rerank  → cross-encoder 的 logit，可负、无上界
+        两者【不能比大小】，也不能拿去套任何按余弦定的阈值。
+        判断这次检索好不好，看【排序】和"对的那条在不在里面"，
+        不要看分数的绝对值。result["retriever"] 说明它是哪一种。
 
     ── 两个刻意的设计决定 ──
 
@@ -230,7 +315,15 @@ def ask(
     #   顺带修掉一个潜伏的分歧：query 前缀原来只活在评测脚本里，
     #   生产路径压根没有这个概念。今天两边数字一样，只因为 bge-m3
     #   的前缀是空串；换成 qwen3-embedding 就会一边加一边不加。
-    hits = DenseRetriever(client, emb_model, vectors, ids).search(query, k=k)
+    #
+    # ★ 2026-10-12（S5-4）：检索器改成【可以注入】。
+    #   默认不传时行为不变（自己建一个 dense），所以老的调用方不用改。
+    #   但生产入口【应该】在循环外建好再传进来 —— 因为现在检索器里
+    #   可能裹着一个 cross-encoder，而"每题重建一次"的代价是实打实的。
+    if retriever is None:
+        retriever = build_retriever(client, emb_model, vectors, ids, chunks, k=k)
+
+    hits = retriever.search(query, k=k)
 
     # ── ④ chunk_id → chunk 字典 ──
     # ★ 必须按 chunk_id 查，不能按行号。
@@ -258,6 +351,7 @@ def ask(
             "question": question,
             "query": query,
             "expanded": query != question,
+            "retriever": retriever.name,
             "retrieved": retrieved,
             "parsed": None,
             "problems": [],
@@ -275,6 +369,7 @@ def ask(
         "question": question,
         "query": query,
         "expanded": query != question,
+        "retriever": retriever.name,
         "retrieved": retrieved,
         "parsed": parsed,
         "problems": problems,
