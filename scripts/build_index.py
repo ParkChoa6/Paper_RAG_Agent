@@ -44,6 +44,28 @@ PAPERS = {
         "kg-reasoning-survey",
         "A Survey of Knowledge Graph Reasoning on Graph Types: Static, Dynamic, and Multi-Modal",
     ),
+    # ---- 2026-10-12 扩语料 2 篇 → 7 篇 ----
+    # 加这 5 条之前踩了一次坑，见 main() 里那段「反方向也要查」。
+    "Knowledge Graphs Opportunities and Challenges.pdf": (
+        "kg-opportunities-challenges",
+        "Knowledge Graphs: Opportunities and Challenges",
+    ),
+    "Overview of knowledge reasoning for knowledge graph.pdf": (
+        "kg-reasoning-overview",
+        "Overview of knowledge reasoning for knowledge graph",
+    ),
+    "Multi-hop interpretable meta learning for few-shot temporal knowledge graph completion.pdf": (
+        "tkg-meta-learning",
+        "Multi-hop interpretable meta learning for few-shot temporal knowledge graph completion",
+    ),
+    "Multi-hop reasoning of knowledge chain over fuzzy spatiotemporal knowledge graphs with box embedding.pdf": (
+        "tkg-box-embedding",
+        "Multi-hop reasoning of knowledge chain over fuzzy spatiotemporal knowledge graphs with box embeddings",
+    ),
+    "Temporal knowledge graph reasoning based on time layering and fuzzy logic rules.pdf": (
+        "tkg-time-layering",
+        "Temporal knowledge graph reasoning based on time layering and fuzzy logic rules",
+    ),
 }
 
 
@@ -59,6 +81,30 @@ def main() -> None:
     logger.info("chunk 输出目录 → %s", PROCESSED_DIR)
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ---- 反方向也要查，而且是【报错】不是警告 ----
+    #
+    # 下面的循环只遍历 PAPERS，所以「raw/ 里躺着一个没登记的 PDF」
+    # 这件事它【根本看不到】—— 那篇论文就是不存在，一句提示都没有。
+    #
+    # ★ 2026-10-12 真踩到了：一次丢了 5 篇 PDF 进 raw/，忘了登记，
+    #   重建索引后还是 337 条 / 2 篇，而【日志干干净净】。
+    #   注意「找不到 xxx，跳过」那条警告是【另一个方向】的
+    #   （登记了但文件没了），它救不了这种情况。
+    #
+    # 丢论文这件事不会自愈：检索永远找不到它，现象只是「有些问题答不上来」，
+    # 而你会以为是模型不行。所以在这里响亮地失败 —— 和 index.build()
+    # 那边「宁可抛错也不静默跳过」是同一条规矩。
+    known = set(PAPERS)
+    loose = sorted(p.name for p in RAW_DIR.glob("*.pdf") if p.name not in known)
+    if loose:
+        raise RuntimeError(
+            f"data/raw/ 里有 {len(loose)} 个 PDF 【没有登记】，它们不会被解析：\n"
+            + "\n".join(f"    {n}" for n in loose)
+            + "\n\n补进 scripts/build_index.py 的 PAPERS 表"
+            "（键必须和文件名逐字一致）。\n"
+            "如果是有意不放进来，把文件移出 data/raw/。"
+        )
 
     all_chunks = []
 

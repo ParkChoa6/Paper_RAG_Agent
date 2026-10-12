@@ -32,10 +32,30 @@
 ## ⚡ 下次从这里继续
 
 **端到端入口已通，失败 A 已修，探针能失败了**
-**Stage 5 已开工 —— S5-1「检索器抽象」✅ 完成，下一步是 S5-2「BM25」**
+**Stage 5 已开工：S5-1 检索器抽象 ✅ → S5-0 扩语料 ✅ → 下一步 S5-2（BM25 + RRF）**
+
+### 📊 当前基线（语料 1345 条 / 7 篇，12 题）
+
+| 检索器 | Top-1 | MRR | 平均排名 | recall@5 |
+|---|---|---|---|---|
+| `dense:bge-m3:raw` | 50% | 0.563 | 21.4 | **58%** |
+
+**这是 S5-2 要打败的数字。**
+
+> ⚠️ 语料 2 篇时的旧基线（MRR 0.597 / recall@5 75%）**作废** —— 干扰项多了，不可比。
+> 扩语料前后 Top-1 都是 50%，但 **recall@5 从 75% 掉到 58%**。
+> 详见 [`docs/stages/S5-0-corpus-expansion.md`](stages/S5-0-corpus-expansion.md)。
 
 ★ **2026-10-12 起工作方式变了**：改由我快速开发，每个**可验证的小步**交一份开发记录，
-放在 **`docs/stages/`**。这一份是 [`docs/stages/S5-1-retriever.md`](stages/S5-1-retriever.md)。
+放在 **`docs/stages/`**。目前有
+[`S5-1-retriever.md`](stages/S5-1-retriever.md)（检索器抽象）和
+[`S5-0-corpus-expansion.md`](stages/S5-0-corpus-expansion.md)（扩语料）。
+
+```bash
+.venv/Scripts/python.exe scripts/build_index.py      # 7 篇 → 1345 chunks
+.venv/Scripts/python.exe scripts/build_vectors.py
+.venv/Scripts/python.exe scripts/eval_retrieve.py --detail bge-m3
+```
 
 ```bash
 # 评检索器（新增）
