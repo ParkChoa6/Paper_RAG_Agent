@@ -41,6 +41,7 @@ def generate(
     model: str,
     prompt: str,
     options: dict | None = None,
+    format=None,
 ) -> str:
     """单轮生成：给一段 prompt，拿一段文本回来。
 
@@ -50,6 +51,14 @@ def generate(
         prompt:   完整的 prompt 字符串
         options:  透传给 Ollama 的生成参数，比如
                     {"temperature": 0, "num_predict": 512, "seed": 42}
+        format:   ★ S5-7：透传给 Ollama 的 `format` —— 【约束解码】。
+                  传一个 JSON Schema（dict）或 "json"（裸语法），
+                  采样器就被限死在合法输出上；传 None = 不约束。
+                  ⚠️ 参数名就叫 format（和 Ollama 的关键字【同名】），
+                     这是故意的：想找"哪次调用约束了解码"，grep format 就够。
+                     代价是它在本函数里遮住了内置 format() —— 本函数不用那个。
+                  ⚠️ 别传裸 "json"：实测会触发 Ollama 的重复保护直接 500。
+                     理由见 config.GEN_JSON_SCHEMA 的注释。
 
     返回:
         str —— 模型输出的【原文】
@@ -59,8 +68,13 @@ def generate(
         【判断是上层的事。】
         这一层多写一行"帮它清理一下输出"，你就再也说不清
         到底是模型没按格式答，还是你替它圆过去了。
+
+        ★ format 不违反这条：它不是"替它清理输出"，
+          它是【在模型开口之前就限死它的嘴】——
+          走过来说的话依然是模型自己说的，一个字没被改。
     """
-    resp = client.generate(model=model, prompt=prompt, options=options or {})
+    resp = client.generate(model=model, prompt=prompt, options=options or {},
+                           format=format)
     return resp.response
 
 

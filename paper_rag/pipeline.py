@@ -62,6 +62,7 @@ from paper_rag.config import (
     EMB_MODEL,
     EXPANSIONS,
     EXPAND_ENABLED,
+    GEN_JSON_SCHEMA,
     GEN_MODEL,
     REFUSAL_TEXT,
     RERANK_ENABLED,
@@ -242,6 +243,7 @@ def ask(
     expand: bool = EXPAND_ENABLED,
     options: dict | None = None,
     retriever: Retriever | None = None,
+    gen_schema: bool = GEN_JSON_SCHEMA,
 ) -> dict:
     """完整走一遍：扩写 → 检索 → 生成 → 校验引用。
 
@@ -261,6 +263,9 @@ def ask(
         retriever: 已经建好的检索器。★ 循环里调 ask 时【必须】传 ——
                    不传的话每次都会新建一个（含重排器），白做一堆构造。
                    见 build_retriever 的 ⚠️ 说明。
+        gen_schema: 要不要用 JSON Schema 约束解码（默认跟 config.GEN_JSON_SCHEMA）。
+                   ★ S5-7 加的。它修的是一整类【解析失败】，和检索无关 ——
+                   见 config.GEN_JSON_SCHEMA 和 generator.GEN_SCHEMA。
 
     返回:
         {
@@ -344,7 +349,8 @@ def ask(
 
     # ── ⑤ 生成 ──
     try:
-        parsed = answer(client, question, materials, model=gen_model, options=options)
+        parsed = answer(client, question, materials, model=gen_model,
+                        options=options, schema=gen_schema)
     except Exception as e:
         # 不抛。但也不许悄悄降级成拒答 —— 见 _judge 的说明。
         return {

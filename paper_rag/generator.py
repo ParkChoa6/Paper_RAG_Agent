@@ -23,7 +23,7 @@
 import json
 import logging
 
-from paper_rag.config import GEN_MODEL
+from paper_rag.config import GEN_JSON_SCHEMA, GEN_MODEL
 from paper_rag.llm import generate
 
 logger = logging.getLogger(__name__)
@@ -334,6 +334,45 @@ def build_prompt(question: str, chunks: list[dict]) -> str:
     return "\n".join(parts)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  ★ S5-7：把上面那段「输出格式」交给采样器当【语法】。
+#
+#  这是 build_prompt() 第 5 节那份契约的【机器可读版】，
+#  形状和 parse_response() 第 3 步校验的字段【完全一致】 —— 三者是同一件事：
+#
+#      build_prompt 第 5 节   给【模型】看的字面示例（人话）
+#      本常量                 给【采样器】看的语法（它不接受人话）
+#      parse_response 第 3 步  给【代码】做的形状校验（事后把关）
+#
+#  ⚠️⚠️ 三份，就【必须一起改】。这和 render_material 那条是同一条规矩：
+#      「守卫的判据和它守的那个操作只要是两套，就会各自漂移」。
+#      加一个字段到这里却没加到 prompt 里 → 模型不知道该填，语法又逼着它填，
+#      结果是它编一个值；反过来则是模型填了、采样器不认。
+#
+#  ── 为什么它治得了「JSON 壳没闭合」──
+#
+#     约束解码（GBNF）把采样器的合法下一步【限死】在语法允许的 token 上。
+#     想吐 EOS 就必须站在语法的【接受态】—— 而 `{"answer": "...", "used": [1]`
+#     这个状态不接受结束。**模型物理上没法停在半路。**
+#
+#     这和"在 prompt 里再叮嘱一句别忘了括号"是两回事：
+#     后者是【请求】，前者是【保证】。S5-6 §2.3 说过模型嘴上答应得很好转头照旧。
+#
+#  ── 为什么 quotes 用 additionalProperties 而不是写死键名 ──
+#     键是【材料编号】，题题不同（"1"/"2"/"3"…）。写死 {"1": ...} 就等于
+#     只允许一条引用 —— 而 prompt 里的示例恰好也是写死 "1" 和 "3" 的。
+#     ★ 那个示例是【形状示范】，不是"只能有 1 和 3"。schema 必须比它宽。
+GEN_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "used": {"type": "array", "items": {"type": "integer"}},
+        "quotes": {"type": "object", "additionalProperties": {"type": "string"}},
+    },
+    "required": ["answer", "used", "quotes"],
+}
+
+
 def parse_response(raw: str) -> dict:
     """把模型输出的【文本】解析成 {"answer": str, "used": list[int]}。
 
@@ -440,6 +479,24 @@ def parse_response(raw: str) -> dict:
 
         ★ 恢复条件：探针里连续两次看到这个报错 → 立刻修。
 
+    ── ★★ 2026-10-13（S5-7）：恢复条件触发了，但【修的不是这个洞】──
+
+        端到端评测里 `parse_failed` 出现 4 次，探针里又 4/4 复现。
+        按恢复条件本该在这里加 raw_decode —— 探完才发现【用不上】：
+
+          raw_decode 解决的是「我们【切】错了位置」，
+          而实测的病是「文本里【缺】字符」——
+          模型自己停了（done_reason='stop'），JSON 的壳少关了一个或多个 `}`。
+          没有合法 JSON 可解，试遍每个 { 也解不出来。
+
+        ★ 这就是"恢复条件触发 ≠ 按预写的方案修"。
+          预写的是一个【针对当时想象的失败模式】的方案，
+          而真实失败模式变了。**先探针，再动手** —— 差一步就白写一个解析器，
+          而且新解析器会让"壳缺括号"这种病看起来像已经处理过了。
+
+        真正的修法在 GEN_SCHEMA（约束解码，从源头保证语法闭合）。
+        本函数【一行没改】—— 它要的本来就是"合法 JSON"，现在拿到的确实是。
+
     ── 一句反复出现的话 ──
 
         "第一个 { 就是 JSON 的开头" 和今天第 4 枪的
@@ -515,6 +572,7 @@ def answer(
     chunks: list[dict],
     model: str = GEN_MODEL,
     options: dict | None = None,
+    schema: bool = GEN_JSON_SCHEMA,
 ) -> dict:
     """编排：拼 prompt → 调模型 → 解析。胶水，不含逻辑。
 
@@ -525,10 +583,19 @@ def answer(
         model:    生成模型
         options:  透传给 Ollama 的生成参数
                   （建议 {"temperature": 0} —— 评测的时候你要可复现）
+        schema:   要不要用 GEN_SCHEMA 约束解码（默认跟 config.GEN_JSON_SCHEMA）。
+                  ★ 做成参数而不是写死，是为了能 A/B ——
+                  而 A/B 的时候【必须把它的值记进评测结果】，
+                  否则「评测跑的是哪个配置」又会变成一个查不出来的问题
+                  （S5-1 / S5-2 / S5-5 已经栽过三次）。
 
     返回:
         parse_response() 的结果，{"answer": str, "used": list[int]}
     """
     prompt = build_prompt(question, chunks)
-    raw = generate(client, model, prompt, options=options)
+    # ★ schema=False 时【明确传 None】，不是"不传"。
+    #   Ollama 的 format 默认值就是"不约束"，两者等价 —— 但写成 None 让
+    #   "这次没约束"变成代码里看得见的事实，而不是靠"我漏传了一个参数"。
+    raw = generate(client, model, prompt, options=options,
+                   format=GEN_SCHEMA if schema else None)
     return parse_response(raw)

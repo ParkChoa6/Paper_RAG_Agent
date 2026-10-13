@@ -74,6 +74,12 @@
     ./.venv/Scripts/python.exe scripts/eval_answer.py --arms rerank
     ./.venv/Scripts/python.exe scripts/eval_answer.py --limit 3          # 冒烟
     ./.venv/Scripts/python.exe scripts/eval_answer.py --out D:/tmp/x     # 换输出前缀
+    ⚠️ --out 给的若是【不带目录的裸名字】，产物落在【当前目录】而不是
+       data/processed/ 下。要指定目录就写全（data/processed/xxx）。
+
+    ★ S5-7 加的两个开关（A/B 用；默认值都是生产值）:
+    ./.venv/Scripts/python.exe scripts/eval_answer.py --arms dense --no-gen-schema
+    ./.venv/Scripts/python.exe scripts/eval_answer.py --arms dense --gen-seed 42
 
 前置: Ollama 起着 + 索引存在（scripts/build_vectors.py）
 
@@ -100,7 +106,14 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from paper_rag import cite, generator
-from paper_rag.config import EMB_MODEL, EVAL_DIR, GEN_MODEL, PROCESSED_DIR, TOP_K
+from paper_rag.config import (
+    EMB_MODEL,
+    EVAL_DIR,
+    GEN_JSON_SCHEMA,
+    GEN_MODEL,
+    PROCESSED_DIR,
+    TOP_K,
+)
 from paper_rag.embed import make_client
 from paper_rag.index import load
 from paper_rag.pipeline import ask, build_retriever, expand_query
@@ -109,6 +122,26 @@ from paper_rag.pipeline import ask, build_retriever, expand_query
 # 同一个问题两次跑出两个答案，你就没法判断「改了一行之后是变好了还是碰巧」。
 # ★ 这一条在【生成】这半边比在检索那半边重要得多：
 #   检索是确定性的，生成不是。忘了传，整张表都是噪声。
+#
+# ⚠️⚠️ 2026-10-13（S5-7）**差点写下一个错的警告，这里是改对之后的版本。**
+#
+#    第一版警告写的是：「temperature=0 【并没有】让它可复现 ——
+#    同一配置跑两遍，28 题里 7 题答案实质不同。」
+#    那是**从一对运行**（A vs A2）读出来的。后来把基线补到 8 次运行，
+#    才发现：**那 7 题全部来自 8 次里唯一的一次异常运行。**
+#    另外 21 个配对全在 0~2/28。
+#
+#    现在实测到的本底噪声（8 次无约束运行）：
+#       解析失败    0 题   —— 8/8 次都恰好是 [Q6, Q13]，完全确定
+#       材料含答案  0 题   —— 8/8 次都是 20
+#       合规回答    1 题   —— 22 或 23
+#       答案文本    1 / 28 —— 而且永远是 Q3
+#
+#    ★ 所以：`temperature=0` 是【相当可复现】的，单遍 A/B 大体可信；
+#      但 1 题的差别永远不算数。**别再用一对运行去判断"什么是噪声"。**
+#    ★ 那次异常运行的成因没查清（代码、prompt、检索都排除了）。
+#      它恰好长得像"默认温度下的采样"（见 S5-7 记录 §4.4 / §7.1）。
+#    → `--gen-seed` 试过了，**没用**：不同 seed 之间的差异和同 seed 一样小。
 GEN_OPTIONS = {"temperature": 0}
 
 
@@ -194,10 +227,11 @@ def build_arms(names: list[str], client, chunks, vectors, ids, targets_map, k):
     return out
 
 
-def run_arm(arm: str, retriever, queries, client, chunks, vectors, ids, *, k, limit):
+def run_arm(arm: str, retriever, queries, client, chunks, vectors, ids, *,
+            k, limit, gen_schema):
     """在一个 arm 上跑完整个评测集，返回每题一行原始记录。"""
     print(f"\n{'=' * 78}")
-    print(f"arm = {arm}    检索器: {retriever.name}")
+    print(f"arm = {arm}    检索器: {retriever.name}    JSON schema 约束: {gen_schema}")
     print("=" * 78)
 
     rows = []
@@ -213,6 +247,7 @@ def run_arm(arm: str, retriever, queries, client, chunks, vectors, ids, *, k, li
             expand=True,          # ★ 生产是开着的，评测必须跟生产同一条路
             options=GEN_OPTIONS,
             retriever=retriever,
+            gen_schema=gen_schema,
         )
         secs = time.time() - t1
 
@@ -235,6 +270,12 @@ def run_arm(arm: str, retriever, queries, client, chunks, vectors, ids, *, k, li
             "q": q,
             "targets": item["targets"],
             "retriever": r["retriever"],
+            # ★ S5-7：把【生成侧的开关】也记进每一行。
+            #   它不改检索、不改题、不报错 —— 和 S5-1 的 query 前缀、
+            #   S5-2 的扩展开关是同一类"只影响一处的开关"。
+            #   前两次都是【事后才发现两份结果量的不是一回事】，这次先把话说在前面。
+            "gen_schema": gen_schema,
+            "gen_options": dict(GEN_OPTIONS),
             "status": r["status"],
             "n_problems": len(r["problems"]),
             "problems": r["problems"],
@@ -585,9 +626,22 @@ def main() -> None:
     ap.add_argument("-k", type=int, default=TOP_K, help=f"检索几条（默认 {TOP_K}）")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 题（冒烟用）")
     ap.add_argument("--out", default=None,
-                    help="输出前缀（默认 data/processed/e2e）")
+                    help="输出前缀（默认 data/processed/e2e）。"
+                         "⚠️ 裸名字会落在【当前目录】，不是 data/processed/ —— 要目录就写全")
     ap.add_argument("--seed", type=int, default=20261013, help="判卷表打乱种子")
+    # ★ S5-7：生成侧的开关也要能 A/B —— 但【默认值 = 生产值】。
+    #   这就挡住了"评测量 A、生产跑 B"那个老病：想量 B 必须【明说】。
+    ap.add_argument("--gen-schema", action=argparse.BooleanOptionalAction,
+                    default=GEN_JSON_SCHEMA,
+                    help="用 JSON Schema 约束解码（默认跟 config；--no-gen-schema 做对照）")
+    # ★ S5-7 §7.1 的实验工具：temperature=0 实测【不可复现】，试试固定 seed 管不管用。
+    #   不传 = 现状（不设种子）。传了就进 options。
+    ap.add_argument("--gen-seed", type=int, default=None,
+                    help="给生成设一个固定 seed（试能不能压住跨运行抖动）")
     args = ap.parse_args()
+
+    if args.gen_seed is not None:
+        GEN_OPTIONS["seed"] = args.gen_seed
 
     arms = [x.strip() for x in args.arms.split(",") if x.strip()]
 
@@ -603,6 +657,8 @@ def main() -> None:
 
     print(f"评测集: {len(queries)} 题 · 语料: {len(chunks)} 条 · k={args.k} · 生成: {GEN_MODEL}")
     print(f"arm: {', '.join(arms)}    输出前缀: {out_prefix}")
+    print(f"JSON schema 约束: {args.gen_schema}"
+          f"{'  ← = config.GEN_JSON_SCHEMA（生产值）' if args.gen_schema == GEN_JSON_SCHEMA else '  ⚠️ 与生产不同（对照组）'}")
 
     client = make_client()
 
@@ -620,7 +676,7 @@ def main() -> None:
     for a in arms:
         rows_by_arm[a] = run_arm(
             a, retrievers[a], queries, client, chunks, vectors, ids,
-            k=args.k, limit=0,
+            k=args.k, limit=0, gen_schema=args.gen_schema,
         )
         # 每跑完一个 arm 就落一次盘 —— 后面的 arm 挂了，前面的还在。
         (out_prefix.parent / f"{out_prefix.name}_results.json").write_text(
