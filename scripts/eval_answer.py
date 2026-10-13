@@ -709,6 +709,11 @@ def main() -> None:
     print(f"\n判卷表: {out_prefix.parent / (out_prefix.name + '_judge.md')}")
     print(f"揭盲表: {out_prefix.parent / (out_prefix.name + '_key.json')}  ← 判完再看")
     print(f"原始结果: {out_prefix.parent / (out_prefix.name + '_results.json')}")
+    # ★ 判卷是【人】做的（脚本分不出"材料里其实有答案"和"模型编了"），
+    #   但数格子和配对检验是【机器】做的。别让人去做机器能做的部分 ——
+    #   84 个格子攒出来的注意力，不该在最后一步换成一句"大概对吧"。
+    print(f"★ 填完判卷表后算分: ./.venv/Scripts/python.exe scripts/score_judge.py "
+          f"{(out_prefix.parent / (out_prefix.name + '_judge.md')).as_posix()}")
 
     # 汇总也落一份，方便直接贴进阶段记录。
     (out_prefix.parent / f"{out_prefix.name}_summary.json").write_text(

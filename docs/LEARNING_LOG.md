@@ -479,6 +479,15 @@ S5-6（端到端评测）/ S5-7（约束解码 + 量本底噪声）/ **S5-8（�
 ```
 
 ```bash
+# ★ 填完判卷表之后算分：揭盲 + 逐臂答对率 + 配对 McNemar
+.venv/Scripts/python.exe scripts/score_judge.py
+#   默认读 data/processed/e2e_judge.md + e2e_key.json
+#   也可以指别的：score_judge.py <judge.md> <key.json> [<results.json>]
+#   退出码 1 = 还有格子没填 / 判定词不认识 —— ★ 宁可不给分，也不猜
+#   ★ 判卷是【人】做的，数格子和配对是【机器】做的 —— 别让人做机器的活
+```
+
+```bash
 # 问一句话，拿一个带引用的答案（要先把 Ollama 起着）
 .venv/Scripts/python.exe scripts/ask.py "知识图谱嵌入模型是按什么标准分类的？"
 .venv/Scripts/python.exe scripts/ask.py --no-expand "……"     # 关掉查询扩展做对照
