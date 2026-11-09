@@ -13,7 +13,8 @@
 | 机器 | RTX 4070 SUPER（12GB 显存）/ 32GB 内存 / i5-13600KF |
 | Python | 3.13.9 |
 | 模型运行时 | Ollama **0.40.2**（2026-10-12 实测；本文原写 0.33.2 已过期） |
-| 已有模型 | `qwen2:7b`（生成）、`bge-large-zh-v1.5`（中文 embedding） |
+| 已有模型 | `qwen2:7b`（生成）、`bge-m3:latest`（embedding，1024 维） |
+| 重排模型 | `BAAI/bge-reranker-v2-m3`（sentence-transformers，**跑在 CPU**） |
 | 模型路线 | **本地 Ollama 为主** —— 零成本、离线、随便试 |
 | 学习起点 | Python 刚入门，工程经验少 |
 
@@ -30,16 +31,18 @@
 
 ## 二、进度总览
 
-- [ ] Stage 0A · Python 最小必要集
-- [ ] Stage 0B · 环境跑通与工程地基
-- [ ] Stage 1 · 文档接入
-- [ ] Stage 2 · 向量化与检索
-- [ ] Stage 3 · 朴素 RAG
-- [ ] Stage 4 · 引用溯源
-- [ ] Stage 5 · 检索质量
+- [x] Stage 0A · Python 最小必要集
+- [x] Stage 0B · 环境跑通与工程地基
+- [x] Stage 1 · 文档接入
+- [x] Stage 2 · 向量化与检索
+- [x] Stage 3 · 朴素 RAG
+- [x] Stage 4 · 引用溯源
+- [ ] Stage 5 · 检索质量 ← **进行中**（S5-1 ~ S5-9 已完，剩判卷表与编号错配）
 - [ ] Stage 6 · Agent 化
 - [ ] Stage 7 · 多论文分析
 - [ ] Stage 8 · 工程收尾
+
+> 架构与数据流见 [ARCHITECTURE.md](ARCHITECTURE.md)。这份文件只记**进度和决策**。
 
 ---
 
@@ -112,6 +115,24 @@
 
 **验收**：手写检索的结果与向量库一致，并能解释"为什么索引能加速"。
 
+**✅ 已完成（2026-09-24）**
+
+三种实现全部对拍通过（纯 Python / numpy / FAISS `IndexFlatIP`）：
+顺序一致，分数最大差 `1.19e-07`。也踩全了 FAISS 的三个边界
+（`-1` 填充、二维输入、id 映射在外面）。
+
+**★ 但生产用的是 numpy，不是 FAISS。** 实测（`probe_scale.py`）：
+
+```
+  237 条时   暴力检索 0.091 ms   占一次问答 0.24%
+             FAISS     0.036 ms   占一次问答 0.09%
+```
+
+换 FAISS 等于把一个 0.24% 的开销优化到 0.09%。`faiss-cpu` 因此
+**进 `requirements.txt` 但不接线**，触发条件写在那个文件的注释里。
+一句话：**决定要不要上向量库的不是 FAISS 有多快，是 N 有多大。**
+按 53 ns/chunk 外推，检索要长到能看见（约 50 ms），需要 ≈ 90 万 chunk ≈ 4000 篇论文。
+
 ---
 
 ### Stage 3 · 朴素 RAG
@@ -170,6 +191,7 @@
 | ★ 量清本底噪声 + 试 seed（两个猜想都被推翻） | ✅ | S5-7 记录 §4.4 / §7.1 |
 | S5-8 修引用校验假阳性（`[N]` 前缀 + PDF 丢空格 + PDF 断行） | ✅ | [`stages/S5-8-cite-false-alarm.md`](stages/S5-8-cite-false-alarm.md) |
 | ★ 引用校验拆病：假警报 / 编号错配 / 真伪造 | ✅ | S5-8 记录 §4.3 —— 19 / 8 / 2 |
+| S5-9 文档重写：README / 架构图 / 评估复核 | ✅ | [`stages/S5-9-docs.md`](stages/S5-9-docs.md) |
 | 填判卷表（答对率） | ⬜ **下一个** | S5-6 记录 4.8 —— 唯一能回答"到底对了几题" ⚠️ 见下 |
 | 编号错配的根治（改契约执行顺序） | ⬜ | S5-8 记录 §7.4 —— 8 个实例稳定复现 |
 | HyDE / multi-query | ⬜ ⚠️ **前提变了** | S5-6 记录 7：瓶颈不在检索侧 |
